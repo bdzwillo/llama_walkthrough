@@ -816,13 +816,13 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
     char rendered_prompt[1152];
     int num_prompt_tokens = 0;
     int* prompt_tokens = (int*)malloc(1152 * sizeof(int));
-    int user_idx;
+    int user_idx = 0;
 
     // start the main loop
     int8_t user_turn = 1; // user starts
-    int next;        // will store the next token in the sequence
+    int next = 0;    // will store the next token in the sequence
     int token;       // stores the current token to feed into the transformer
-    int prev_token;
+    // int prev_token;
     int pos = 0;     // position in the sequence
     while (pos < steps) {
 
