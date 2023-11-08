@@ -228,6 +228,25 @@ void rmsnorm(float* o, const float* x, const float* weight, int size) {
     }
 }
 
+void layernorm(float *o, const float *x, const float* weight, int size) {
+    // calculate mean and variance
+    float sum = 0.0f;
+    float sum_sq = 0.0f;
+    for (int j = 0; j < size; j++) {
+        sum += x[j];
+        sum_sq += x[j] * x[j];
+    }
+    float mean = sum / size;
+    float variance = (sum_sq / size) - (mean * mean);
+    float eps = 1e-5f;
+
+    // normalize and scale
+    for (int j = 0; j < size; j++) {
+        o[j] = (x[j] - mean) / sqrtf(variance + eps);
+        o[j] = weight[j] * o[j];
+    }
+}
+
 void softmax(float* x, int size) {
     // find max value (for numerical stability)
     float max_val = x[0];
@@ -295,13 +314,31 @@ int topk(const float *x, int dim, int k, int *top)
 	return 0;
 }
 
-int sum(const float *x, int dim) {
-	float sum=0.0;
+int sum(const float *v, int n) {
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        sum += v[i];
+    }
+    return sum;
+}
 
-	for (int i=0; i < dim; i++) {
-		sum += x[i];
-	}
-	return sum;
+float mean(const float *v, int n) {
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        sum += v[i];
+    }
+    return (float)(sum / n);
+}
+
+float variance(const float *v, int n) {
+    float sum = 0.0f;
+    float sum_sq = 0.0f;
+    for (int j = 0; j < n; j++) {
+        sum += v[j];
+        sum_sq += v[j] * v[j];
+    }
+    float mean = sum / n;
+    return (float)((sum_sq / n) - (mean * mean));
 }
 
 // ----------------------------------------------------------------------------
@@ -1439,7 +1476,7 @@ void error_usage() {
     fprintf(stderr, "  -n <int>    number of steps to run for, default 256. 0 = max_seq_len\n");
     fprintf(stderr, "  -i <string> input prompt\n");
     fprintf(stderr, "  -z <string> optional path to custom tokenizer\n");
-    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|generate_layers|tokenize|emded|embed_tokens|distance, default: generate\n");
+    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|generate_layers|tokenize|emded|embed_tokens|distance|position|position_rope, default: generate\n");
     fprintf(stderr, "  -y <string> (optional) system prompt in chat mode\n");
     exit(EXIT_FAILURE);
 }
