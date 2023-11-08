@@ -83,6 +83,15 @@ typedef struct {
 } RunState;
 
 typedef struct {
+    Tokenizer *tokenizer;
+    int embedding;
+    int added; // show added weights
+    int attention;
+    int layer; // layer to tyrace
+    int head; // head to trace
+} Trace;
+
+typedef struct {
     Config config; // the hyperparameters of the architecture (the blueprint)
     TransformerWeights weights; // the weights of the model
     RunState state; // buffers for the "wave" of activations in the forward pass
@@ -90,6 +99,7 @@ typedef struct {
     int fd; // file descriptor for memory mapping
     float* data; // memory mapped data pointer
     ssize_t file_size; // size of the checkpoint file in bytes
+    Trace *trace; // enable trace output
 } Transformer;
 
 void malloc_run_state(RunState* s, Config* p) {
@@ -189,6 +199,7 @@ void build_transformer(Transformer *t, char* checkpoint_path) {
     read_checkpoint(checkpoint_path, &t->config, &t->weights, &t->fd, &t->data, &t->file_size);
     // allocate the RunState buffers
     malloc_run_state(&t->state, &t->config);
+    t->trace = NULL;
 }
 
 void free_transformer(Transformer* t) {
@@ -437,6 +448,13 @@ float* forward(Transformer* transformer, int token, int pos) {
     float* content_row = w->token_embedding_table + token * dim;
     memcpy(x, content_row, dim*sizeof(*x));
 
+    if (transformer->trace && transformer->trace->embedding) { // output embedding layer
+        rmsnorm(s->xb, x, w->rms_final_weight, dim);
+        matmul(s->logits, s->xb, w->wcls, p->dim, p->vocab_size);
+        printf(" E:"); output_topk(transformer->trace->tokenizer, s->logits);
+        printf("\n");
+    }
+
     // forward all the layers
     for(unsigned long long l = 0; l < p->n_layers; l++) {
 
@@ -511,6 +529,14 @@ float* forward(Transformer* transformer, int token, int pos) {
             }
         }
 
+        if (transformer->trace && transformer->trace->attention) { // output single head attention mask
+            if (l == transformer->trace->layer) {
+                int h = transformer->trace->head;
+                printf("%12s:", transformer->trace->tokenizer->vocab[token]);
+                printf(" A[%llu,%d]:", l, h); vec_dump(s->att + h * p->seq_len, pos+1, 8); printf("\n");
+            }
+        }
+
         // final matmul to get the output of the attention
         matmul(s->xb2, s->xb, w->wo + l*dim*dim, dim, dim);
 
@@ -543,6 +569,26 @@ float* forward(Transformer* transformer, int token, int pos) {
         // residual connection
         for (int i = 0; i < dim; i++) {
             x[i] += s->xb[i];
+        }
+
+        if (transformer->trace && transformer->trace->embedding) { // output layer
+            float xtmp[dim];
+            rmsnorm(xtmp, x, w->rms_final_weight, dim);
+            matmul(s->logits, xtmp, w->wcls, p->dim, p->vocab_size);
+            printf("%2lld:", l);
+            int maxoff = 40;
+            int toklen = output_topk(transformer->trace->tokenizer, s->logits);
+            if (transformer->trace->added) {
+                for (int i = toklen; i < maxoff; i++) {
+                    printf(" ");
+                }
+                printf(" ");
+                rmsnorm(xtmp, s->xb, w->rms_final_weight, dim);
+                matmul(s->logits, xtmp, w->wcls, p->dim, p->vocab_size);
+                printf("ADDED:");
+                output_topk(transformer->trace->tokenizer, s->logits);
+            }
+            printf("\n");
         }
     }
 
@@ -1013,6 +1059,30 @@ void generate_topk(Transformer *transformer, Tokenizer *tokenizer, Sampler *samp
     }
 }
 
+void generate_layers(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps) {
+    int token[steps+1];
+    int num_prompt_tokens = get_tokens(tokenizer, prompt, token, steps);
+    int pos = 0;
+
+    Trace trace = { .tokenizer = tokenizer, .embedding = 1, .added = 1 };
+    transformer->trace = &trace;
+
+    while (pos < steps) {
+        float *logits = forward(transformer, token[pos], pos);
+        pos++;
+
+        if (pos >= num_prompt_tokens) {
+            // when prompt is completed, append token with the highest probability
+            token[pos] = sample(sampler, logits);
+
+            if (token[pos] == 1) { break; } // stop at BOS==1 token
+        }
+        output_formatted_token(tokenizer, token[pos]);
+        output_topk(tokenizer, logits);
+        printf("\n");
+    }
+}
+
 void read_stdin(const char* guide, char* buffer, size_t bufsize) {
     // read a line from stdin, up to but not including \n
     printf("%s", guide);
@@ -1317,7 +1387,7 @@ void error_usage() {
     fprintf(stderr, "  -n <int>    number of steps to run for, default 256. 0 = max_seq_len\n");
     fprintf(stderr, "  -i <string> input prompt\n");
     fprintf(stderr, "  -z <string> optional path to custom tokenizer\n");
-    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|tokenize|emded|embed_tokens|distance, default: generate\n");
+    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|generate_layers|tokenize|emded|embed_tokens|distance, default: generate\n");
     fprintf(stderr, "  -y <string> (optional) system prompt in chat mode\n");
     exit(EXIT_FAILURE);
 }
@@ -1382,6 +1452,8 @@ int main(int argc, char *argv[]) {
         generate_greedy(&transformer, &tokenizer, prompt, steps);
     } else if (strcmp(mode, "generate_topk") == 0) {
         generate_topk(&transformer, &tokenizer, &sampler, prompt, steps);
+    } else if (strcmp(mode, "generate_layers") == 0) {
+        generate_layers(&transformer, &tokenizer, &sampler, prompt, steps);
     } else if (strcmp(mode, "tokenize") == 0) {
         tokenize(&tokenizer, prompt);
     } else if (strcmp(mode, "embed") == 0) {
