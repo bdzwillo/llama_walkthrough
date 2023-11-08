@@ -1179,6 +1179,131 @@ void embed_tokens(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampl
 }
 
 // ----------------------------------------------------------------------------
+// distance test
+
+int getnext(Transformer *t, Tokenizer *tokenizer, char *prompt, float *weights) {
+    int max_tokens = strlen(prompt)+3; // +3 for '\0', ?BOS, ?EOS
+    int prompt_tokens[max_tokens];
+    int num_prompt_tokens = get_tokens(tokenizer, prompt, prompt_tokens, max_tokens);
+
+    // reinit the RunState buffers
+    free_run_state(&t->state);
+    malloc_run_state(&t->state, &t->config);
+
+    int pos = 0;     // position in the sequence
+    int token;
+    float *logits;
+    do {
+        token = prompt_tokens[pos];
+        logits = forward(t, token, pos);
+        pos++;
+    } while (pos < num_prompt_tokens);
+    token = sample_argmax(logits, tokenizer->vocab_size);
+
+    output_formatted_token(tokenizer, token);
+    vec_top_dump(t->state.x, t->config.dim, 3);
+    printf(", TOP:");
+    output_topk_with_index(tokenizer, logits, 5, 0);
+    printf("\n");
+
+    memcpy(weights, t->state.x, t->config.dim*sizeof(float));
+    return token;
+}
+
+// 1.0 = similar
+// (cosine_similarity is identical to dot-product on input vectors with mean=0 and variance=1)
+//
+float cosine_similarity(const float* v1, const float* v2, int n) {
+    double dot = 0.0;
+    double mag1 = 0.0;
+    double mag2 = 0.0;
+
+    // calc dot product & magnitutes of each vector
+    for (int i = 0; i < n; i++) {
+        dot += v1[i] * v2[i];
+        mag1 += v1[i] * v1[i];
+        mag2 += v2[i] * v2[i];
+    }
+    mag1 = sqrt(mag1);
+    mag2 = sqrt(mag2);
+
+    if (mag1 == 0.0 || mag2 == 0.0) {
+        return 0.0;
+    }
+    return (float)(dot / (mag1 * mag2));
+}
+
+void distance(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps) {
+    Config* p = &transformer->config;
+    TransformerWeights* w = &transformer->weights;
+    RunState* s = &transformer->state;
+
+    // the embedding vectors predict the value of the next token
+    //
+    char *q_man = "An adult boy is a";
+    char *q_woman = "An adult girl is a";
+    char *q_king = "Long live the";
+    char *q_queen = "God save the";
+
+    if (prompt) {
+        char *e;
+        if ((e = strtok(prompt, "/"))) { q_man = e; }
+        if ((e = strtok(NULL, "/"))) { q_woman = e; }
+        if ((e = strtok(NULL, "/"))) { q_king = e; }
+        if ((e = strtok(NULL, "/"))) { q_queen = e; }
+    }
+
+    printf("Generate word embeddings for (%s../%s../%s..):\n", q_man, q_woman, q_king);
+
+    float man[p->dim];
+    float woman[p->dim];
+    float king[p->dim];
+    float queen[p->dim];
+    int t_man = getnext(transformer, tokenizer, q_man, man);
+    int t_woman = getnext(transformer, tokenizer, q_woman, woman);
+    int t_king = getnext(transformer, tokenizer, q_king, king);
+    int t_queen = getnext(transformer, tokenizer, q_queen, queen);
+    char *s_man = tokenizer->vocab[t_man];
+    char *s_woman = tokenizer->vocab[t_woman];
+    char *s_king = tokenizer->vocab[t_king];
+    char *s_queen = tokenizer->vocab[t_queen];
+
+    printf("\n");
+    printf("  similarity(%-6s,%-6s): %1.8f\n", s_man,   s_man,   cosine_similarity(man, man, p->dim));
+    printf("  similarity(%-6s,%-6s): %1.8f\n", s_man,   s_woman, cosine_similarity(man, woman, p->dim));
+    printf("  similarity(%-6s,%-6s): %1.8f\n", s_man,   s_king,  cosine_similarity(man, king, p->dim));
+    printf("  similarity(%-6s,%-6s): %1.8f\n", s_woman, s_king,  cosine_similarity(woman, king, p->dim));
+    printf("  similarity(%-6s,%-6s): %1.8f\n", s_man,   s_queen, cosine_similarity(man, queen, p->dim));
+    printf("  similarity(%-6s,%-6s): %1.8f\n", s_woman, s_queen, cosine_similarity(woman, queen, p->dim));
+    printf("  similarity(%-6s,%-6s): %1.8f\n", s_king,  s_queen, cosine_similarity(king, queen, p->dim));
+    printf("\n");
+
+    float x[p->dim];
+
+    // test example: “king” - “man” + “woman” =~ "queen"
+    //
+    for (int i = 0; i < p->dim; i++) {
+        x[i] = king[i] - man[i] + woman[i];
+    }
+    matmul(s->logits, x, w->wcls, p->dim, p->vocab_size);
+
+    int token = sample_argmax(s->logits, tokenizer->vocab_size);
+
+    printf("Calculate '%s' - '%s' + '%s' =~ '%s':\n", s_man, s_woman, s_king, tokenizer->vocab[token]);
+
+    output_formatted_token(tokenizer, token);
+    vec_top_dump(x, p->dim, 3);
+    printf(", TOP:");
+    output_topk_with_index(tokenizer, s->logits, 5, 0);
+    printf("\n");
+
+    printf("\n");
+    printf("  similarity(%-6s,%-6s): %1.8f\n", s_man,   tokenizer->vocab[token], cosine_similarity(man, x, p->dim));
+    printf("  similarity(%-6s,%-6s): %1.8f\n", s_woman, tokenizer->vocab[token], cosine_similarity(woman, x, p->dim));
+    printf("  similarity(%-6s,%-6s): %1.8f\n", s_king,  tokenizer->vocab[token], cosine_similarity(king, x, p->dim));
+}
+
+// ----------------------------------------------------------------------------
 // CLI, include only if not testing
 #ifndef TESTING
 
@@ -1192,7 +1317,7 @@ void error_usage() {
     fprintf(stderr, "  -n <int>    number of steps to run for, default 256. 0 = max_seq_len\n");
     fprintf(stderr, "  -i <string> input prompt\n");
     fprintf(stderr, "  -z <string> optional path to custom tokenizer\n");
-    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|tokenize|emded|embed_tokens, default: generate\n");
+    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|tokenize|emded|embed_tokens|distance, default: generate\n");
     fprintf(stderr, "  -y <string> (optional) system prompt in chat mode\n");
     exit(EXIT_FAILURE);
 }
@@ -1263,6 +1388,8 @@ int main(int argc, char *argv[]) {
         embed(&transformer, &tokenizer, &sampler, prompt, steps);
     } else if (strcmp(mode, "embed_tokens") == 0) {
         embed_tokens(&transformer, &tokenizer, &sampler, prompt, steps);
+    } else if (strcmp(mode, "distance") == 0) {
+        distance(&transformer, &tokenizer, &sampler, prompt, steps);
     } else {
         fprintf(stderr, "unknown mode: %s\n", mode);
         error_usage();
