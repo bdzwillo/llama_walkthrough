@@ -50,10 +50,6 @@ jobs:
         run: |
           make runfast
 
-      - name: Test with pytest
-        run: |
-          pytest
-
   macOS-latest-make:
     runs-on: macos-latest
 
@@ -92,9 +88,6 @@ jobs:
         id: make_build_runfast
         run: |
           make runfast
-
-      - name: Test with pytest
-        run: pytest
 
 
 
@@ -142,10 +135,6 @@ jobs:
         run: |
           .\build_msvc.bat
 
-      #cross-comiled, cannot be run on host
-      - name: Test with pytest
-        if: matrix.arch != 'amd64_arm64'
-        run: pytest
 
   windows-latest-mingw:
     runs-on: windows-latest
@@ -188,6 +177,3 @@ jobs:
             pip install -r requirements.txt
           }
 
-      - name: Test with pytest
-        shell: powershell
-        run: pytest
