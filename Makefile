@@ -1,6 +1,6 @@
 # choose your compiler, e.g. gcc/clang
 # example override to clang: make run CC=clang
-CC = gcc
+CC = gcc -Wall -std=c99 -std=gnu11
 
 # the most basic way of building that is most likely to work on most systems
 .PHONY: run
