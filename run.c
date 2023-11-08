@@ -1120,6 +1120,31 @@ void generate_layers(Transformer *transformer, Tokenizer *tokenizer, Sampler *sa
     }
 }
 
+void generate_attention(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps) {
+    int token[steps+1];
+    int num_prompt_tokens = get_tokens(tokenizer, prompt, token, steps);
+    int pos = 0;
+
+    Trace trace = { .tokenizer = tokenizer, .attention = 1, .layer = 0, .head = 0 };
+    transformer->trace = &trace;
+
+    while (pos < steps) {
+        float *logits = forward(transformer, token[pos], pos);
+        pos++;
+
+        if (pos >= num_prompt_tokens) {
+            // when prompt is completed, append token with the highest probability
+            token[pos] = sample(sampler, logits);
+
+            if (token[pos] == 1) { break; } // stop at BOS==1 token
+        }
+        // token is shown in trace output
+        //output_formatted_token(tokenizer, token[pos]);
+        //output_topk(tokenizer, logits);
+        //printf("\n");
+    }
+}
+
 void read_stdin(const char* guide, char* buffer, size_t bufsize) {
     // read a line from stdin, up to but not including \n
     printf("%s", guide);
@@ -1476,7 +1501,7 @@ void error_usage() {
     fprintf(stderr, "  -n <int>    number of steps to run for, default 256. 0 = max_seq_len\n");
     fprintf(stderr, "  -i <string> input prompt\n");
     fprintf(stderr, "  -z <string> optional path to custom tokenizer\n");
-    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|generate_layers|tokenize|emded|embed_tokens|distance|position|position_rope, default: generate\n");
+    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|generate_layers|generate_attention|tokenize|emded|embed_tokens|distance, default: generate\n");
     fprintf(stderr, "  -y <string> (optional) system prompt in chat mode\n");
     exit(EXIT_FAILURE);
 }
@@ -1543,6 +1568,8 @@ int main(int argc, char *argv[]) {
         generate_topk(&transformer, &tokenizer, &sampler, prompt, steps);
     } else if (strcmp(mode, "generate_layers") == 0) {
         generate_layers(&transformer, &tokenizer, &sampler, prompt, steps);
+    } else if (strcmp(mode, "generate_attention") == 0) {
+        generate_attention(&transformer, &tokenizer, &sampler, prompt, steps);
     } else if (strcmp(mode, "tokenize") == 0) {
         tokenize(&tokenizer, prompt);
     } else if (strcmp(mode, "embed") == 0) {
