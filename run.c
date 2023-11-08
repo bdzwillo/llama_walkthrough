@@ -1374,6 +1374,58 @@ void distance(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
 }
 
 // ----------------------------------------------------------------------------
+// position test
+
+void position(Transformer *transformer, int steps) {
+    Config* p = &transformer->config;
+    float vc[p->dim/2];
+    float vs[p->dim/2];
+
+    for (int pos=0; pos < steps; pos++) {
+        for (int i = 0; i < p->dim; i+=2) {
+            float freq = 1.0f / powf(10000.0f, i / (float)p->dim);
+            float val = pos * freq;
+
+            vc[i/2] = cosf(val);
+            vs[i/2] = sinf(val);
+        }
+        printf("%2d: cos:", pos); vec_dump(vc, p->dim/2, 6);
+        printf("\n");
+        printf("%2d: sin:", pos); vec_dump(vs, p->dim/2, 6);
+        printf("\n");
+    }
+}
+
+void position_rope(Transformer *transformer, float xval, float yval, int steps, int do_rope) {
+    Config* p = &transformer->config;
+    float q[p->dim];
+
+    for (int pos=0; pos < steps; pos++) {
+        // initialize test query with repeated (x, y) tupels
+        for (int i = 0; i < p->dim; i+=2) {
+            q[i]   = xval;
+            q[i+1] = yval;
+        }
+        for (int i = 0; i < p->dim; i+=2) {
+            float freq = 1.0f / powf(10000.0f, i / (float)p->dim);
+            float val = pos * freq;
+
+            float v0 = q[i];
+            float v1 = q[i+1];
+            if (do_rope) {
+                q[i]   = v0 * cosf(val) - v1 * sinf(val);
+                q[i+1] = v0 * sinf(val) + v1 * cosf(val);
+            } else {
+                q[i]   = v0 + cosf(val);
+                q[i+1] = v1 + sinf(val);
+            }
+        }
+        printf("%2d:", pos); vec_dump(q, p->dim, 8);
+        printf("\n");
+    }
+}
+
+// ----------------------------------------------------------------------------
 // CLI, include only if not testing
 #ifndef TESTING
 
@@ -1462,6 +1514,10 @@ int main(int argc, char *argv[]) {
         embed_tokens(&transformer, &tokenizer, &sampler, prompt, steps);
     } else if (strcmp(mode, "distance") == 0) {
         distance(&transformer, &tokenizer, &sampler, prompt, steps);
+    } else if (strcmp(mode, "position") == 0) {
+        position(&transformer, steps);
+    } else if (strcmp(mode, "position_rope") == 0) {
+        position_rope(&transformer, 1.0f, 1.0f, steps, 1);
     } else {
         fprintf(stderr, "unknown mode: %s\n", mode);
         error_usage();
