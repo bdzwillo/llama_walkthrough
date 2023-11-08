@@ -90,52 +90,6 @@ jobs:
           make runfast
 
 
-
-
-  windows-latest-make:
-    runs-on: windows-latest
-
-    strategy:
-      fail-fast: false  #necessary, otherwise the matrix breaks
-      matrix:
-        arch:
-          - amd64
-          - amd64_x86
-          - amd64_arm64
-
-    steps:
-      - name: Clone
-        id: checkout
-        uses: actions/checkout@v3
-
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v1
-
-      - name: Setup MSVC ${{ matrix.arch }}
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.arch }}
-
-      - name: Set up Python 3.10
-        if: matrix.arch != 'amd64_arm64'
-        uses: actions/setup-python@v3
-        with:
-          python-version: "3.10"
-
-      - name: Pip setup
-        if: matrix.arch != 'amd64_arm64'
-        run: |
-          python -m pip install --upgrade pip
-          if (Test-Path requirements.txt) {
-            pip install -r requirements.txt
-          }
-
-      - name: Build ${{ matrix.arch }}
-        id: build_msvc
-        run: |
-          .\build_msvc.bat
-
-
   windows-latest-mingw:
     runs-on: windows-latest
 
