@@ -251,6 +251,14 @@ void matmul(float* xout, float* x, float* w, int n, int d) {
     }
 }
 
+void mattranspose(float* xout, float* x, int n, int d) {
+    for (int i = 0; i < d; i++) {
+        for (int j = 0; j < n; j++) {
+            xout[j * d + i] = x[i * n + j];
+	}
+    }
+}
+
 int topk(const float *x, int dim, int k, int *top)
 {
 	if (k > dim) {
@@ -276,11 +284,60 @@ int topk(const float *x, int dim, int k, int *top)
 	return 0;
 }
 
+int sum(const float *x, int dim) {
+	float sum=0.0;
+
+	for (int i=0; i < dim; i++) {
+		sum += x[i];
+	}
+	return sum;
+}
+
 // ----------------------------------------------------------------------------
 // helper
 
 void vec_copy(float *xout, const float *x, int size) {
 	memcpy(xout, x, size * sizeof(float));
+}
+
+void vec_dump(const float *x, int dim, int win)
+{
+	int i;
+
+	printf("[");
+	for (i=0; i < dim; i++) {
+		if (i >= win) {
+			break;
+		}
+		if (i > 0) {
+			printf(", ");
+		}
+		printf("%7.4f", x[i]);
+	}
+	if (i < (dim-win)) {
+		i = dim-win;
+		printf(", ...");
+	}
+	for (; i < dim; i++) {
+		printf(", %7.4f", x[i]);
+	}
+	printf("]");
+}
+
+void vec_top_dump(const float *x, int dim, int win)
+{
+	int top[win];
+
+	topk(x, dim, win, top);
+
+	printf("[");
+	for (int i=0; i < win; i++) {
+		if (i > 0) {
+			printf(", ");
+		}
+		printf("%d: %1.4f", top[i], x[top[i]]);
+	}
+	printf("]");
 }
 
 void safe_printf(const char *piece) {
@@ -1070,6 +1127,58 @@ void tokenize(Tokenizer *tokenizer, char *prompt) {
 }
 
 // ----------------------------------------------------------------------------
+// embedding test
+
+void embed(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps) {
+    int max_tokens = prompt ? strlen(prompt)+3 : 1; // +3 for '\0', ?BOS, ?EOS
+    int prompt_tokens[max_tokens];
+    int num_prompt_tokens = get_tokens(tokenizer, prompt, prompt_tokens, max_tokens);
+
+    Config *p = &transformer->config;
+    TransformerWeights *w = &transformer->weights;
+    float embeds[p->dim];
+
+    // dump whole vacabulary if prompt is empty
+    for (int pos=0; pos < (prompt ? num_prompt_tokens : p->vocab_size); pos++) {
+        int token = prompt ? prompt_tokens[pos] : pos;
+        // copy the token embedding
+        vec_copy(embeds, w->token_embedding_table + token * p->dim, p->dim);
+
+        float w_sum = sum(embeds, p->dim);
+        output_formatted_token(tokenizer, token);
+        vec_dump(embeds, p->dim, 3);
+        printf(", SUM: %3.2f, TOP:", w_sum);
+        vec_top_dump(embeds, p->dim, 3);
+        printf("\n");
+    }
+}
+
+void embed_tokens(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps) {
+    int max_tokens = prompt ? strlen(prompt)+3 : 1; // +3 for '\0', ?BOS, ?EOS
+    int prompt_tokens[max_tokens];
+    int num_prompt_tokens = get_tokens(tokenizer, prompt, prompt_tokens, max_tokens);
+
+    Config *p = &transformer->config;
+    TransformerWeights *w = &transformer->weights;
+    float embeds[p->dim];
+    float logits[p->vocab_size];
+
+    // dump whole vacabulary if prompt is empty
+    for (int pos=0; pos < (prompt ? num_prompt_tokens : p->vocab_size); pos++) {
+        int token = prompt ? prompt_tokens[pos] : pos;
+        // copy the token embedding
+        vec_copy(embeds, w->token_embedding_table + token * p->dim, p->dim);
+
+        rmsnorm(embeds, embeds, w->rms_final_weight, p->dim);
+        matmul(logits, embeds, w->wcls, p->dim, p->vocab_size);
+
+        output_formatted_token(tokenizer, token);
+        output_topk_with_index(tokenizer, logits, 5, 1);
+        printf("\n");
+    }
+}
+
+// ----------------------------------------------------------------------------
 // CLI, include only if not testing
 #ifndef TESTING
 
@@ -1083,7 +1192,7 @@ void error_usage() {
     fprintf(stderr, "  -n <int>    number of steps to run for, default 256. 0 = max_seq_len\n");
     fprintf(stderr, "  -i <string> input prompt\n");
     fprintf(stderr, "  -z <string> optional path to custom tokenizer\n");
-    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|tokenize, default: generate\n");
+    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|tokenize|emded|embed_tokens, default: generate\n");
     fprintf(stderr, "  -y <string> (optional) system prompt in chat mode\n");
     exit(EXIT_FAILURE);
 }
@@ -1150,6 +1259,10 @@ int main(int argc, char *argv[]) {
         generate_topk(&transformer, &tokenizer, &sampler, prompt, steps);
     } else if (strcmp(mode, "tokenize") == 0) {
         tokenize(&tokenizer, prompt);
+    } else if (strcmp(mode, "embed") == 0) {
+        embed(&transformer, &tokenizer, &sampler, prompt, steps);
+    } else if (strcmp(mode, "embed_tokens") == 0) {
+        embed_tokens(&transformer, &tokenizer, &sampler, prompt, steps);
     } else {
         fprintf(stderr, "unknown mode: %s\n", mode);
         error_usage();
