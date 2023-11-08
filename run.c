@@ -13,6 +13,24 @@
     #include <unistd.h>
     #include <sys/mman.h>
 #endif
+
+// ----------------------------------------------------------------------------
+// Tokenizer
+
+typedef struct {
+    char *str;
+    int id;
+} TokenIndex;
+
+typedef struct Tokenizer {
+    char** vocab;
+    float* vocab_scores;
+    TokenIndex *sorted_vocab;
+    int vocab_size;
+    unsigned int max_token_length;
+    unsigned char byte_pieces[512]; // stores all single-byte strings
+} Tokenizer;
+
 // ----------------------------------------------------------------------------
 // Transformer model
 
@@ -184,7 +202,7 @@ void free_transformer(Transformer* t) {
 // ----------------------------------------------------------------------------
 // neural net blocks; the dynamics of the Transformer
 
-void rmsnorm(float* o, float* x, float* weight, int size) {
+void rmsnorm(float* o, const float* x, const float* weight, int size) {
     // calculate sum of squares
     float ss = 0.0f;
     for (int j = 0; j < size; j++) {
@@ -233,6 +251,118 @@ void matmul(float* xout, float* x, float* w, int n, int d) {
     }
 }
 
+int topk(const float *x, int dim, int k, int *top)
+{
+	if (k > dim) {
+		return -1;
+	}
+	memset(top, 0, k * sizeof(int));
+
+	for (int i=0; i < dim; i++) {
+		if (x[top[k-1]] <= x[i]) {
+			top[k-1] = i;
+
+			// sort index into top[k] array
+			for (int j=k-1; j > 0; j--) {
+				if (x[top[j]] < x[top[j-1]]) {
+					break;
+				}
+				int tmp = top[j];
+				top[j] = top[j-1];
+				top[j-1] = tmp;
+			}
+		}
+	}
+	return 0;
+}
+
+// ----------------------------------------------------------------------------
+// helper
+
+void vec_copy(float *xout, const float *x, int size) {
+	memcpy(xout, x, size * sizeof(float));
+}
+
+void safe_printf(const char *piece) {
+    // piece might be a raw byte token, and we only want to print printable chars or whitespace
+    // because some of the other bytes can be various control codes, backspace, etc.
+    if (piece == NULL) { return; }
+    if (piece[0] == '\0') { return; }
+    if (piece[1] == '\0') {
+        unsigned char byte_val = piece[0];
+        if (!(isprint(byte_val) || isspace(byte_val))) {
+            return; // bad byte, don't print it
+        }
+    }
+    printf("%s", piece);
+}
+
+void output_ids(const int *token, int n) {
+    printf("[");
+    for (int i=0; i < n; i++) {
+	if (i > 0) {
+		printf(", ");
+	}
+	printf("%d", token[i]);
+    }
+    printf("]");
+    printf("\n");
+}
+
+void output_tokens(char **vocab, const int *token, int n) {
+    printf("[");
+    for (int i=0; i < n; i++) {
+	if (i > 0) {
+		printf(", ");
+	}
+	//printf("'%s'", vocab[token[i]]);
+	printf("'");
+	safe_printf(vocab[token[i]]);
+	printf("'");
+    }
+    printf("]");
+    printf("\n");
+}
+
+int output_topk_with_index(Tokenizer *tokenizer, const float *logits, int n, int with_index) {
+    if (n > tokenizer->vocab_size) {
+        n = tokenizer->vocab_size;
+    }
+    int toklen = 0;
+    int top[n];
+    float p_logits[tokenizer->vocab_size];
+    vec_copy(p_logits, logits, tokenizer->vocab_size);
+    softmax(p_logits, tokenizer->vocab_size); // convert to propabilities
+    topk(p_logits, tokenizer->vocab_size, n, top);
+
+    if (with_index) {
+        printf("{");
+    } else {
+        printf("[");
+    }
+    for (int i=0; i < n; i++) {
+	char *piece = tokenizer->vocab[top[i]];
+	int percent = (int)(p_logits[top[i]] * 100);
+	if (i > 0) { printf(", "); }
+        if (with_index) {
+	    printf("%d: ('%s', %d)", top[i], piece, percent);
+        } else {
+	    printf("('%s', %d)", piece, percent);
+        }
+        toklen += strlen(piece); if (percent > 9) { toklen++; }
+    }
+    if (with_index) {
+        printf("}");
+    } else {
+        printf("]");
+    }
+    return toklen;
+}
+
+int output_topk(Tokenizer *tokenizer, const float *logits) {
+    return output_topk_with_index(tokenizer, logits, 5, 0);
+}
+
 float* forward(Transformer* transformer, int token, int pos) {
 
     // a few convenience variables
@@ -277,7 +407,6 @@ float* forward(Transformer* transformer, int token, int pos) {
                 vec[i+1] = v0 * fci + v1 * fcr;
             }
         }
-
         // save key,value at this time step (pos) to our kv cache
         int loff = l * p->seq_len * kv_dim; // kv cache layer offset for convenience
         float* key_cache_row = s->key_cache + loff + pos * kv_dim;
@@ -371,20 +500,6 @@ float* forward(Transformer* transformer, int token, int pos) {
 // ----------------------------------------------------------------------------
 // The Byte Pair Encoding (BPE) Tokenizer that translates strings <-> tokens
 
-typedef struct {
-    char *str;
-    int id;
-} TokenIndex;
-
-typedef struct {
-    char** vocab;
-    float* vocab_scores;
-    TokenIndex *sorted_vocab;
-    int vocab_size;
-    unsigned int max_token_length;
-    unsigned char byte_pieces[512]; // stores all single-byte strings
-} Tokenizer;
-
 int compare_tokens(const void *a, const void *b) {
     return strcmp(((TokenIndex*)a)->str, ((TokenIndex*)b)->str);
 }
@@ -411,6 +526,9 @@ void build_tokenizer(Tokenizer* t, char* tokenizer_path, int vocab_size) {
         t->vocab[i] = (char *)malloc(len + 1);
         if (fread(t->vocab[i], len, 1, file) != 1) { fprintf(stderr, "failed read\n"); exit(EXIT_FAILURE); }
         t->vocab[i][len] = '\0'; // add the string terminating token
+        // remove tokenizer.bin changes again.
+        if (i==1) { snprintf(t->vocab[i], len+1, "<s>"); }
+        if (i==2) { snprintf(t->vocab[i], len+1, "<\\s>"); }
     }
     fclose(file);
 }
@@ -433,20 +551,6 @@ char* decode(Tokenizer* t, int prev_token, int token) {
         piece = (char*)t->byte_pieces + byte_val * 2;
     }
     return piece;
-}
-
-void safe_printf(char *piece) {
-    // piece might be a raw byte token, and we only want to print printable chars or whitespace
-    // because some of the other bytes can be various control codes, backspace, etc.
-    if (piece == NULL) { return; }
-    if (piece[0] == '\0') { return; }
-    if (piece[1] == '\0') {
-        unsigned char byte_val = piece[0];
-        if (!(isprint(byte_val) || isspace(byte_val))) {
-            return; // bad byte, don't print it
-        }
-    }
-    printf("%s", piece);
 }
 
 int str_lookup(char *str, TokenIndex *sorted_vocab, int vocab_size) {
@@ -594,7 +698,7 @@ typedef struct {
     unsigned long long rng_state;
 } Sampler;
 
-int sample_argmax(float* probabilities, int n) {
+int sample_argmax(const float* probabilities, int n) {
     // return the index that has the highest probability
     int max_i = 0;
     float max_p = probabilities[0];
@@ -695,26 +799,28 @@ float random_f32(unsigned long long *state) { // random float32 in [0,1)
     return (random_u32(state) >> 8) / 16777216.0f;
 }
 
-int sample(Sampler* sampler, float* logits) {
+int sample(Sampler* sampler, const float* logits) {
     // sample the token given the logits and some hyperparameters
     int next;
     if (sampler->temperature == 0.0f) {
         // greedy argmax sampling: take the token with the highest probability
         next = sample_argmax(logits, sampler->vocab_size);
     } else {
+        float p_logits[sampler->vocab_size];
+
         // apply the temperature to the logits
-        for (int q=0; q<sampler->vocab_size; q++) { logits[q] /= sampler->temperature; }
+        for (int q=0; q<sampler->vocab_size; q++) { p_logits[q] = logits[q] / sampler->temperature; }
         // apply softmax to the logits to get the probabilities for next token
-        softmax(logits, sampler->vocab_size);
+        softmax(p_logits, sampler->vocab_size);
         // flip a (float) coin (this is our source of entropy for sampling)
         float coin = random_f32(&sampler->rng_state);
         // we sample from this distribution to get the next token
         if (sampler->topp <= 0 || sampler->topp >= 1) {
             // simply sample from the predicted probability distribution
-            next = sample_mult(logits, sampler->vocab_size, coin);
+            next = sample_mult(p_logits, sampler->vocab_size, coin);
         } else {
             // top-p (nucleus) sampling, clamping the least likely tokens to zero
-            next = sample_topp(logits, sampler->vocab_size, sampler->topp, sampler->probindex, coin);
+            next = sample_topp(p_logits, sampler->vocab_size, sampler->topp, sampler->probindex, coin);
         }
     }
     return next;
@@ -733,7 +839,7 @@ long time_in_ms() {
 // ----------------------------------------------------------------------------
 // generation loop
 
-void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps) {
+int get_tokens(Tokenizer *tokenizer, char *prompt, int *tokens, int max_tokens) {
     char *empty_prompt = "";
     if (prompt == NULL) { prompt = empty_prompt; }
 
@@ -745,6 +851,31 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         fprintf(stderr, "something is wrong, expected at least 1 prompt token\n");
         exit(EXIT_FAILURE);
     }
+    if (num_prompt_tokens > max_tokens) {
+        num_prompt_tokens = max_tokens;
+    }
+    memcpy(tokens, prompt_tokens, max_tokens * sizeof(int));
+    free(prompt_tokens);
+    return num_prompt_tokens;
+}
+
+void output_string(Tokenizer *tokenizer, int prev_token, int token) {
+        // print the token as string, decode it with the Tokenizer object
+        char* piece = decode(tokenizer, prev_token, token);
+        safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
+        fflush(stdout);
+}
+
+void output_formatted_token(Tokenizer *tokenizer, int token) {
+        char cur[64];
+        snprintf(cur, sizeof(cur), "'%s'", tokenizer->vocab[token]);
+        printf("%12s:", cur);
+}
+
+void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps) {
+    int max_tokens = strlen(prompt)+3; // +3 for '\0', ?BOS, ?EOS
+    int prompt_tokens[max_tokens];
+    int num_prompt_tokens = get_tokens(tokenizer, prompt, prompt_tokens, max_tokens);
 
     // start the main loop
     long start = 0;  // used to time our code, only initialized after first iteration
@@ -769,10 +900,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         // data-dependent terminating condition: the BOS (=1) token delimits sequences
         if (next == 1) { break; }
 
-        // print the token as string, decode it with the Tokenizer object
-        char* piece = decode(tokenizer, token, next);
-        safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
-        fflush(stdout);
+        output_string(tokenizer, token, next);
         token = next;
 
         // init the timer here because the first iteration can be slower
@@ -785,8 +913,47 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         long end = time_in_ms();
         fprintf(stderr, "achieved tok/s: %f\n", (pos-1) / (double)(end-start)*1000);
     }
+}
 
-    free(prompt_tokens);
+void generate_greedy(Transformer *transformer, Tokenizer *tokenizer, char *prompt, int steps) {
+    int token[steps+1];
+    int num_prompt_tokens = get_tokens(tokenizer, prompt, token, steps);
+    int pos = 0;
+
+    while (pos < steps) {
+        float *logits = forward(transformer, token[pos], pos);
+        pos++;
+
+        if (pos >= num_prompt_tokens) {
+            // when prompt is completed, append token with the highest probability
+            token[pos] = sample_argmax(logits, tokenizer->vocab_size);
+
+            if (token[pos] == 1) { break; } // stop at BOS==1 token
+        }
+        output_string(tokenizer, token[pos-1], token[pos]);
+    }
+    printf("\n");
+}
+
+void generate_topk(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps) {
+    int token[steps+1];
+    int num_prompt_tokens = get_tokens(tokenizer, prompt, token, steps);
+    int pos = 0;
+
+    while (pos < steps) {
+        float *logits = forward(transformer, token[pos], pos);
+        pos++;
+
+        if (pos >= num_prompt_tokens) {
+            // when prompt is completed, append token with the highest probability
+            token[pos] = sample(sampler, logits);
+
+            if (token[pos] == 1) { break; } // stop at BOS==1 token
+        }
+        output_formatted_token(tokenizer, token[pos]);
+        output_topk(tokenizer, logits);
+        printf("\n");
+    }
 }
 
 void read_stdin(const char* guide, char* buffer, size_t bufsize) {
@@ -890,6 +1057,17 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
     free(prompt_tokens);
 }
 
+// ----------------------------------------------------------------------------
+// tokenize test
+
+void tokenize(Tokenizer *tokenizer, char *prompt) {
+    int max_tokens = strlen(prompt)+3; // +3 for '\0', ?BOS, ?EOS
+    int token[max_tokens];
+    int num_tokens = get_tokens(tokenizer, prompt, token, max_tokens);
+
+    output_ids(token, num_tokens);
+    output_tokens(tokenizer->vocab, token, num_tokens);
+}
 
 // ----------------------------------------------------------------------------
 // CLI, include only if not testing
@@ -905,7 +1083,7 @@ void error_usage() {
     fprintf(stderr, "  -n <int>    number of steps to run for, default 256. 0 = max_seq_len\n");
     fprintf(stderr, "  -i <string> input prompt\n");
     fprintf(stderr, "  -z <string> optional path to custom tokenizer\n");
-    fprintf(stderr, "  -m <string> mode: generate|chat, default: generate\n");
+    fprintf(stderr, "  -m <string> mode: generate|chat|generate_greedy|generate_topk|tokenize, default: generate\n");
     fprintf(stderr, "  -y <string> (optional) system prompt in chat mode\n");
     exit(EXIT_FAILURE);
 }
@@ -966,6 +1144,12 @@ int main(int argc, char *argv[]) {
         generate(&transformer, &tokenizer, &sampler, prompt, steps);
     } else if (strcmp(mode, "chat") == 0) {
         chat(&transformer, &tokenizer, &sampler, prompt, system_prompt, steps);
+    } else if (strcmp(mode, "generate_greedy") == 0) {
+        generate_greedy(&transformer, &tokenizer, prompt, steps);
+    } else if (strcmp(mode, "generate_topk") == 0) {
+        generate_topk(&transformer, &tokenizer, &sampler, prompt, steps);
+    } else if (strcmp(mode, "tokenize") == 0) {
+        tokenize(&tokenizer, prompt);
     } else {
         fprintf(stderr, "unknown mode: %s\n", mode);
         error_usage();
