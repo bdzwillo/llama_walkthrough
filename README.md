@@ -1,371 +1,847 @@
-## llama2.c
+Llama2 Transformer Walkthrough
+==============================
+The [Llama2 Large Language Models](https://ai.meta.com/llama/) allow to run an inference
+engine on a local machine. [LLama2](https://arxiv.org/pdf/2307.09288.pdf) uses a
+[Generative Pre-trained Transformer model (GPT)](https://en.wikipedia.org/wiki/Generative_pre-trained_transformer)
+for text generation. Similar transformer models predating Llama2 are for example
+[GPT/ChatGPT-3.5 (2022)](https://platform.openai.com/docs/model-index-for-researchers),
+[GPT-3 (2020)](https://arxiv.org/pdf/2005.14165.pdf) and
+[GPT-2 (2019)](https://d4mucfpksywv.cloudfront.net/better-language-models/language-models.pdf)
+from [OpenAI](https://platform.openai.com/overview),
+[BERT (2019)](https://arxiv.org/pdf/1810.04805.pdf) and [PaLM (2022)](https://arxiv.org/pdf/2204.02311.pdf)
+from [GoogleAI](https://ai.google/) and the original [LLama (2023)](https://arxiv.org/pdf/2302.13971.pdf)
+release from [Meta](https://ai.meta.com/).
 
-<p align="center">
-  <img src="assets/llama_cute.jpg" width="300" height="300" alt="Cute Llama">
-</p>
+The very small [llama2.c](https://github.com/karpathy/llama2.c) implementation
+from Andrej Karpathy is used here to show some of the transformer concepts.
+Extra command line options were added to the tool to test different features
+of the transformer in isolation. The open availability of the Llama2 models
+allows to easily reproduce the results of the given code examples.
 
-Train the Llama 2 LLM architecture in PyTorch then inference it with one simple 700-line C file ([run.c](run.c)). You might think that you need many billion parameter LLMs to do anything useful, but in fact very small LLMs can have surprisingly strong performance if you make the domain narrow enough (ref: [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) paper). This repo is a "fullstack" train + inference solution for Llama 2 LLM, with focus on minimalism and simplicity.
+This was inspired by the walkthrough for other transformer implementations:
 
-As the architecture is identical, you can also load and inference Meta's Llama 2 models. However, the current code only inferences models in fp32, so you will most likely not be able to productively load models larger than 7B. Work on model quantization is currently ongoing.
+- [The Annotated Transformer (Sasha Rush)](http://nlp.seas.harvard.edu/annotated-transformer/)
+- [GPT in 60 Lines of NumPy (Jay Mody)](https://jaykmody.com/blog/gpt-from-scratch/)
+- [The Illustrated GPT-2 (Jay Alammar)](http://jalammar.github.io/illustrated-gpt2/)
 
-Please note that this repo started recently as a fun weekend project: I took my earlier [nanoGPT](https://github.com/karpathy/nanoGPT), tuned it to implement the Llama-2 architecture instead of GPT-2, and the meat of it was writing the C inference engine in [run.c](run.c). So the project is young and moving quickly. Hat tip to the awesome [llama.cpp](https://github.com/ggerganov/llama.cpp) for inspiring this project. Compared to llama.cpp, I wanted something super simple, minimal, and educational so I chose to hard-code the Llama 2 architecture and just roll one inference file of pure C with no dependencies.
+Content:
 
-## feel the magic
+[[_TOC_]]
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/karpathy/llama2.c/blob/master/run.ipynb)
+Example Implementation
+======================
+There are many open source implementations for the Llama models. For example:
 
-First, navigate to the folder when you keep your projects and clone this repository to this folder:
+- [The official Llama2 python example code (Meta)](https://github.com/facebookresearch/llama)
+- [Hugging Face transformers framework for LLama2](https://huggingface.co/docs/transformers/model_doc/llama2)
+- [llama.cpp inference of Llama2 & other LLMs in C++ (Georgi Gerganov)](https://github.com/ggerganov/llama.cpp)
+- [Inference the Llama 2 LLM with one simple 700-line C file (Andrej Karpathy)](https://github.com/karpathy/llama2.c)
 
-```bash
-git clone https://github.com/karpathy/llama2.c.git
+This repo uses a [modified version of the run.c](run.c) source code, which
+was cloned from the [llama2.c](https://github.com/karpathy/llama2.c) implementation.
+The [original 700-line run.c](https://github.com/karpathy/llama2.c/blob/master/run.c)
+file is self contained and well suited for educational purposes.
+
+When built with the `openmp` option this program is also fast enough to
+run the llama2-7b model with reasonable speed on a machine without GPU
+(about 4 tokens/sec with 16 cores).
+
+The [LLama2 model files](https://ai.meta.com/llama/) provided from
+[Meta](https://ai.meta.com/research/publications/llama-2-open-foundation-and-fine-tuned-chat-models/)
+first need to to be converted to custom formats, so they can be used
+with the inference tools.
+
+For the llama2.c examples the models are converted as described in the projects [README](https://github.com/karpathy/llama2.c#metas-llama-2-models):
+```
+# python export.py llama2_7b.bin --meta-llama ./llama-2-7b
+```
+For the python examples this repo uses the transformers library provided
+from [Hugging Face](https://huggingface.co/), where most of the development
+for open Large Language Models is happening. See:
+[Transformers: State-of-the-art Machine Learning for Pytorch, TensorFlow](https://github.com/huggingface/transformers)
+
+For the transformers library the models are converted with the
+[convert_llama_weights_to_hf.py](https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/convert_llama_weights_to_hf.py)
+script provided by the project:
+```
+# python convert_llama_weights_to_hf.py --input_dir ./llama-2-7b --model_size 7B --output_dir 7b
+# rm 7b/tokenizer_config.json 7b/added_tokens.json
 ```
 
-Then, open the repository folder:
+Tokenize
+========
+The tokenizer works with the vocabulary from the `tokenizer.model` file, which
+is also used by many other LLMs like [OpenLlama](https://github.com/openlm-research/open_llama)
+or [Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html).
 
-```bash
-cd llama2.c
+Data is tokenized with the byte-pair encoding (BPE) algorithm using the
+implementation from [Sentence-Piece (Kudo and Richardson, 2018)](https://arxiv.org/pdf/1808.06226.pdf). See:
+* [BPE paper (Sennrich et al., 2015)](https://aclanthology.org/P16-1162.pdf)
+* [BPE unsupervised text tokenizer](https://github.com/google/sentencepiece)
+* [Summary of the tokenizers](https://huggingface.co/docs/transformers/tokenizer_summary)
+
+Each token has a value between 0 and `vocab_size` (32000 for Llama), and
+the vocabulary contains 3 tokens with a special function:
+* index 0 stands for an unknown token (<unk>)
+* index 1 is the begin of a sequence (BOS `<s>`)
+* index 2 is the end of a sequence (EOS `</s>`)
+```python
+from transformers import LlamaTokenizer
+LlamaTokenizer.from_pretrained('7b', legacy=False)
+
+special_tokens={'bos_token': '<s>', 'eos_token': '</s>', 'unk_token': '<unk>'}
 ```
 
-Now, let's just run a baby Llama 2 model in C. You need a model checkpoint. Download this 15M parameter model I trained on the [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) dataset (~60MB download):
+Python tokenize example:
+```python
+from transformers import LlamaTokenizerFast
+tokenizer = LlamaTokenizerFast.from_pretrained('7b', legacy=False)
+tokenizer.encode('This is a testcase')
+tokenizer.convert_ids_to_tokens(tokenizer.encode('This is a testcase'))
 
-```bash
-wget https://huggingface.co/karpathy/tinyllamas/resolve/main/stories15M.bin
+[1, 910, 338, 263, 1243, 4878]
+['<s>', '▁This', '▁is', '▁a', '▁test', 'case']
+```
+llama2.c tokenize example:
+```
+# run llama2_7b.bin -i "This is a testcase" -m tokenize
+
+[1, 910, 338, 263, 1243, 4878]
+['<s>', ' This', ' is', ' a', ' test', 'case']
+```
+Tokens encoding the start of a word contain a leading blank. The LLama
+[SentencePiece BPE tokenizer](https://github.com/google/sentencepiece)
+uses a leading `▁`. The tokenizer splits numbers into individual digits,
+and it uses bytes to decompose unknown UTF-8 characters.
+The vocabulary can contain the same tokens in upper- and lowercase form,
+and it does not group such words together (see index values below).
+```python
+voc = tokenizer.get_vocab()
+[(voc[k], k) for k in list(filter(lambda v: re.match('\W?test$', v, re.IGNORECASE), voc.keys()))]
+
+[(1243, '▁test'), (1688, 'test'), (3057, 'Test'), (4321, '▁Test'), (18267, 'TEST')]
 ```
 
-Compile and run the C code:
+Generate Tokens and Logits
+==========================
+A GPT model is pre-trained and does not change between runs. Even if
+random choices for the output are involved, it will always produce the
+same results when the same seed is used for the software random generator.
 
-```bash
-make run
-./run stories15M.bin
+To generate tokens the model is called with the token ids of the input
+sentence. It returns a sequence of output token ids. The `generate` method
+of the transformer returns just the sequence of tokens with the
+highest probability (the maximum is selected by `argmax`).
+
+Internally `generate` calls the the `forward` method of the transformer
+for each token (also called `forward` in [llama2.c](run.c)).
+The `forward` method infers the [logits](https://en.wikipedia.org/wiki/Logit)
+for the next token from the preceding input tokens.
+
+As long as the input sentence (the prompt) is processed, the logits are
+discarded. When the input sentence is completely processed, the logits
+are used to select the next output token.
+
+The logits are the unnormalised predictions of the model for each token
+of the vocabulary (32000 for Llama). These predictions can be converted
+to a vector of probabilities by the `softmax` function. The reason to
+return unnormalized values is:
+- softmax is monotonic. For greedy sampling argmax(logits) is equivalent
+  to argmax(softmax(logits)) making softmax redundant.
+- softmax is irreversible. It is always possible to convert from logits
+  to probabilities by applying softmax, but it is not possible to go back
+  from probabilities to logits.
+
+This allows it to use different selection methods. In the example below
+the logits are used to show the top 5 predictions for each token position
+(paired with the probability in percent).
+
+- The [softmax](https://en.wikipedia.org/wiki/Softmax_function) function is
+  used to convert a list of floats (between -inf and +inf) to probabilities
+  (between 0 and 1). The sum of the probabilities is always 1.
+
+- The `topk` functions selects the N largest elements from the given list.
+
+To process subsequent tokens, the output token is appended to the input
+sequence before the model is run again (this is called autoregressive).
+
+```python
+import torch
+from transformers import LlamaForCausalLM, LlamaTokenizer
+tokenizer = LlamaTokenizer.from_pretrained('7b', legacy=False)
+model = LlamaForCausalLM.from_pretrained('7b')
+
+inputs = tokenizer('This is a sentence', return_tensors="pt")
+inputs.input_ids[0].tolist()
+
+[1, 910, 338, 263, 10541]
+
+res = model.generate(**inputs_ids, max_length=15, output_scores=True, return_dict_in_generate=True)
+res.sequences[0].tolist()
+tokenizer.convert_ids_to_tokens(res.sequences[0])
+
+[1, 910, 338, 263, 10541, 393, 306, 505, 6091, 1784, 3064, 297, 590, 2834, 29889]
+['<s>', '▁This', '▁is', '▁a', '▁sentence', '▁that', '▁I', '▁have', '▁heard', '▁many', '▁times', '▁in', '▁my', '▁life', '.']
+
+[int(torch.topk(res.scores[i], 1).indices[0]) for i in range(len(res.scores))]
+
+[393, 306, 505, 6091, 1784, 3064, 297, 590, 2834, 29889]
+
+for i in range(len(res.scores)):
+  softmax = torch.nn.functional.softmax(res.scores[i][0], dim=-1)
+  values, indices = torch.topk(softmax, 5)
+  [(tokenizer.convert_ids_to_tokens(int(indices[i])), int(values[i] * 100)) for i in range(len(values))]
+
+[('▁that', 15), ('▁I', 8), ('▁from', 7), ('▁of', 6), ('▁which', 4)]
+[('▁I', 17), ('▁is', 9), ('▁has', 6), ('▁you', 3), ('▁many', 2)]
+[('▁have', 17), ('’', 8), ('▁never', 4), ('▁hear', 4), ("'", 3)]
+[('▁heard', 21), ('▁been', 10), ('▁written', 6), ('▁said', 6), ('▁used', 4)]
+[('▁many', 22), ('▁a', 8), ('▁more', 4), ('▁so', 3), ('▁over', 3)]
+[('▁times', 87), (',', 3), ('▁people', 2), ('▁a', 1), ('▁many', 0)]
+[('▁in', 16), ('.', 15), ('▁over', 11), (',', 9), ('▁before', 8)]
+[('▁my', 49), ('▁the', 30), ('▁many', 2), ('▁recent', 1), ('▁regards', 1)]
+[('▁life', 59), ('▁career', 6), ('▁', 4), ('▁lifetime', 2), ('▁years', 2)]
+[('.', 53), (',', 19), ('▁and', 8), (':', 3), ('▁as', 2)]
 ```
 
-You'll see the text stream a sample. On my M1 MacBook Air this runs at ~110 tokens/s. See [performance](#performance) or the Makefile for compile flags that can significantly speed this up. We can also try a bit bigger 42M parameter model:
-
-```bash
-wget https://huggingface.co/karpathy/tinyllamas/resolve/main/stories42M.bin
-./run stories42M.bin
+The generated tokens are identical for the llama2.c client, when it
+samples greedily. So this is also a good test for the compatibility of
+the llama2.c implementation.The output shows also the generated results
+for the tokens from the prompt (while the python transformer silently
+discards them):
+```python
+# run llama2_7b.bin -s 1 -t 0.0 -n 14 -i "This is a sentence" -m generate_topk
+     ' This':[(' #', 7), (' Tags', 7), (' The', 4), (' Home', 3), (' \\', 2)]
+       ' is':[(' is', 21), (' week', 4), (' entry', 3), (' article', 2), (' page', 2)]
+        ' a':[(' a', 43), (' the', 18), (' an', 7), (' my', 3), (' one', 2)]
+ ' sentence':[(' placeholder', 19), (' great', 2), (' ', 2), (' very', 2), (' list', 2)]
+     ' that':[(' that', 15), (' I', 8), (' from', 7), (' of', 6), (' which', 4)]
+        ' I':[(' I', 17), (' is', 9), (' has', 6), (' you', 3), (' many', 2)]
+     ' have':[(' have', 17), ('’', 8), (' never', 4), (' hear', 4), ("'", 3)]
+    ' heard':[(' heard', 21), (' been', 10), (' written', 6), (' said', 6), (' used', 4)]
+     ' many':[(' many', 22), (' a', 8), (' more', 4), (' so', 3), (' over', 3)]
+    ' times':[(' times', 87), (',', 3), (' people', 2), (' a', 1), (' many', 0)]
+       ' in':[(' in', 16), ('.', 15), (' over', 11), (',', 9), (' before', 8)]
+       ' my':[(' my', 49), (' the', 30), (' many', 2), (' recent', 1), (' regards', 1)]
+     ' life':[(' life', 59), (' career', 6), (' ', 4), (' lifetime', 2), (' years', 2)]
+         '.':[('.', 53), (',', 19), (' and', 8), (':', 3), (' as', 2)]
 ```
 
-This still runs at interactive rates and samples more coherent and diverse stories:
+Context Size & Prompt
+=====================
+The model is trained on a fixed context size (4096 for Llama2-7B). The context
+size is the number of tokens the model can use to infer the next token.
 
-> Once upon a time, there was a little girl named Lily. She loved playing with her toys on top of her bed. One day, she decided to have a tea party with her stuffed animals. She poured some tea into a tiny teapot and put it on top of the teapot. Suddenly, her little brother Max came into the room and wanted to join the tea party too. Lily didn't want to share her tea and she told Max to go away. Max started to cry and Lily felt bad. She decided to yield her tea party to Max and they both shared the teapot. But then, something unexpected happened. The teapot started to shake and wiggle. Lily and Max were scared and didn't know what to do. Suddenly, the teapot started to fly towards the ceiling and landed on the top of the bed. Lily and Max were amazed and they hugged each other. They realized that sharing was much more fun than being selfish. From that day on, they always shared their tea parties and toys.
+The complete input sequence including the system prompt has to fit into
+the context window. The model can only refer to tokens from the context,
+so this is equal to the 'memory' or attention span of the model.
 
-You can also prompt the model with a prefix or a number of additional command line arguments, e.g. to sample at temperature 0.8 for 256 steps and with a prompt:
+The optional system prompt can contain instructions on how to handle the
+following input sequence (like 'Summarize the following text:'). It is
+prepended to the input sequence and handled in the same way. So the tokens
+of the system prompt are always copied to the start of the context window.
 
-```bash
-./run stories42M.bin -t 0.8 -n 256 -i "One day, Lily met a Shoggoth"
+For text generation each generated token is appended to the end of the
+context window before the model starts to predict the next token. When
+the maximum length of the context window is reached, the client has to
+decide how to proceed:
+
+* the llama2.c client will just stop at the maximum context size. The `steps`
+  parameter is limited by the context size value `config.seq_len`.
+* but other strategies are possible - like rebuilding a new input sequence
+  with the system prompt and selected parts of the generated tokens.
+
+This means for example that a model can only summarize an article as long
+as the context size. For longer articles a client would need a strategy
+to partition the input text and process it in multiple runs.
+
+For a chat engine the text generation will stop when a predefined token
+(like 'User:') appears in the output stream. The client can then append
+its own input tokens before the text generation starts again.
+Some models are trained on fixed prompts for chats or other interactive
+dialogue applications. Often the expected prompt format is described 
+in the model card of a model.
+
+For the llama2-chat model such a prompt looks like described in
+[How to Prompt Llama 2](https://huggingface.co/blog/llama2#how-to-prompt-llama-2)
+(see also the `chat` function in llama2.c):
+```
+<s>[INST] <<SYS>>
+{{ system_prompt }}
+<</SYS>>
+
+{{ user_message }} [/INST]
 ```
 
-> One day, Lily met a Shoggoth. He was very shy, but was also very generous. Lily said “Hello Shoggy! Can I be your friend?” Shoggy was happy to have a friend and said “Yes, let’s explore the universe together!” So they set off on a journey to explore the universe. As they travelled, Shoggy was happy to explain to Lily about all the wonderful things in the universe. At the end of the day, Lily and Shoggy had gathered lots of wonderful things from the universe, and they both felt very proud. They promised to explore the universe as one big pair and to never stop being generous to each other.
+Input Embedding
+===============
+For each token the model contains an embedding vector of the dimension `dim`
+(4096 for the LLama2-7B model). This is also called the dimension of the model.
 
-There is also an even better 110M param model available, see [models](#models).
+In each position of the embedding vector the model encodes a different
+feature of a token. An idea about the concept of word embeddings is given
+in [The Illustrated Word2vec (Jay Alammar, 2019)](http://jalammar.github.io/illustrated-word2vec/)
+(using an older embedding scheme).
 
-Quick note on sampling, the recommendation for ~best results is to sample with `-t 1.0 -p 0.9`, i.e. temperature 1.0 (default) but also top-p sampling at 0.9 (default). Intuitively, top-p ensures that tokens with tiny probabilities do not get sampled, so we can't get "unlucky" during sampling, and we are less likely to go "off the rails" afterwards. More generally, to control the diversity of samples use either the temperature (i.e. vary `-t` between 0 and 1 and keep top-p off with `-p 0`) or the top-p value (i.e. vary `-p` between 0 and 1 and keep `-t 1`), but not both. Nice explainers on LLM sampling strategies include [this](https://peterchng.com/blog/2023/05/02/token-selection-strategies-top-k-top-p-and-temperature/), [this](https://docs.cohere.com/docs/controlling-generation-with-top-k-top-p) or [this](https://huggingface.co/blog/how-to-generate).
+The LLama model differs in a few aspects from this simpler model:
 
-## Meta's Llama 2 models
+* LLama uses tokens and not full words. The features map to these
+  abstract tokens and not to words with a generally understood meaning.
+* the values from the embedding vector are trained. So the encoded
+  features do not map naturally to real-world concepts.
+* the values from the embedding vector are trained to predict the
+  next token. So the features belong to this next token, and not to
+  the token used for the lookup.
 
-As the neural net architecture is identical, we can also inference the Llama 2 models released by Meta. Sadly there is a bit of friction here due to licensing (I can't directly upload the checkpoints, I think). So Step 1, get the Llama 2 checkpoints by following the [Meta instructions](https://github.com/facebookresearch/llama). Once we have those checkpoints, we have to convert them into the llama2.c format.
-For this we need to install the python dependencies (`pip install -r requirements.txt`) and then use the `export.py` file, e.g. for 7B model:
-
-```bash
-python export.py llama2_7b.bin --meta-llama path/to/llama/model/7B
+The features are encoded as floating point weights, and each vector
+sums up to 0. In the example below the top weight for the tokens "is"
+and "not" is in both cases the index "3964", so this might encode a
+shared feature.
+```python
+# run llama2_7b.bin -i "water is not ice" -m embed
+       '<s>':[ 0.0019, -0.0034,  0.0004, ..., -0.0083,  0.0026, -0.0039], SUM: 0.00, TOP:[2533: 0.1206, 2393: 0.1045, 3178: 0.0786]
+    ' water':[-0.0168,  0.0078,  0.0243, ..., -0.0039, -0.0269,  0.0135], SUM: 0.00, TOP:[316: 0.0603, 339: 0.0547, 1512: 0.0540]
+       ' is':[-0.0054,  0.0012,  0.0083, ...,  0.0112, -0.0043, -0.0077], SUM: 0.00, TOP:[3964: 0.0791, 1307: 0.0737, 666: 0.0674]
+      ' not':[ 0.0012,  0.0072,  0.0047, ...,  0.0022,  0.0010, -0.0014], SUM: 0.00, TOP:[3964: 0.0786, 914: 0.0544, 22: 0.0522]
+      ' ice':[-0.0027,  0.0112, -0.0095, ..., -0.0161, -0.0258, -0.0084], SUM: 0.00, TOP:[3461: 0.0610, 1170: 0.0598, 447: 0.0583]
 ```
+Internally the transformer does only work with embedding vectors.
+The mapping back to token-ids happens only at the end when the
+transformer returns the resulting feature vector.
 
-The export will take ~10 minutes or so and generate a 26GB file (the weights of the 7B model in float32) called `llama2_7b.bin` in the current directory. It has been [reported](https://github.com/karpathy/llama2.c/pull/85) that despite efforts. I would not attempt to run anything above 7B right now for two reasons: first, 13B+ currently doesn't work because of integer flow in pointer arithmetic, which is yet to be fixed, and second, even if it were fixed, this repo is doing float32 inference right now, so it would be fairly unusably slow. Once the export is done, we can run it:
-
-```bash
-./run llama2_7b.bin
+The embedding alone does not contain much information. It roughly
+approximates a simple bigram-predictor. As can be seen when the
+vector is mapped back directly to the vocabulary (without running the
+transformer):
+```python
+# run llama2_7b.bin -i "water is not ice" -m embed_tokens
+    ' water':{1994: ('ways', 25), 12559: ('falls', 5), 11950: ('fall', 1), 31450: ('任', 1), 2780: ('color', 1)}
+       ' is':{593: ('nt', 91), 9058: ('rael', 1), 2790: ('hing', 0), 2963: ('ola', 0), 22671: ('olation', 0)}
+      ' not':{1575: ('ices', 43), 23308: ('orious', 14), 19273: ('ebook', 5), 3447: (' yet', 4), 809: ('ew', 4)}
+      ' ice':{2552: ('berg', 49), 25290: ('ulaire', 1), 29608: (' према', 1), 3074: ('burg', 0), 1030: ('bre', 0)}
 ```
+The mapping from token-ids to embeddings is done via the `token_embedding_table`
+from the model. It selects just the matching row of the matrix.
+The Llama embedding is not symmetrical - the mapping back from tokens to logits
+is done via the `wcls` weight classifier matrix from the model. The embedding
+weights need always to be normalized with the `rms_final_weight` vector for this
+final lookup.
+```c
+float embeds[p->dim];
+vec_copy(embeds, w->token_embedding_table + token * p->dim, p->dim);
 
-This ran at about 4 tokens/s compiled with [OpenMP](#OpenMP) on 96 threads on my CPU Linux box in the cloud. (On my MacBook Air M1, currently it's closer to 30 seconds per token if you just build with `make runfast`.) Example output:
-
-> The purpose of this document is to highlight the state-of-the-art of CoO generation technologies, both recent developments and those in commercial use. The focus is on the technologies with the highest merit to become the dominating processes of the future and therefore to be technologies of interest to S&amp;T ... R&amp;D. As such, CoO generation technologies developed in Russia, Japan and Europe are described in some depth. The document starts with an introduction to cobalt oxides as complex products and a short view on cobalt as an essential material. The document continues with the discussion of the available CoO generation processes with respect to energy and capital consumption as well as to environmental damage.
-
-base models... ¯\\_(ツ)_/¯. Since we can inference the base model, it should be possible to also inference the chat model quite easily, and have a conversation with it. And if we can find a way to run 7B more efficiently, we can start adding LoRA to our training script, and going wild with finetunes all within the repo!
-
-You can also chat with the Llama Chat models. Export the chat model exactly as above:
-
-```bash
-python export.py llama2_7b_chat.bin --meta-llama /path/to/7B-chat
+rmsnorm(embeds, embeds, w->rms_final_weight, p->dim);
+matmul(logits, embeds, w->wcls, p->dim, p->vocab_size);
 ```
+Since the embedding matrix maps to features for the following token,
+it is not possible to use the transposed embedding matrix to map back
+to the token vocabulary. The trained `wcls` matrix is used instead.
 
-Then chat with it by specifying the chat mode using the `-m` flag, e.g.:
+Embedding similarity:
 
-```bash
-./run llama2_7b_chat.bin -m chat
+When dealing with vectors, a common way to calculate a similarity score is
+[cosine_similarity](https://en.wikipedia.org/wiki/Cosine_similarity).
+Cosine similarity works with any number of dimensions.
+It can easily calculate how similar vectors are to each other.
+An incredible property of embeddings is the concept of analogies.
+It is possible to add and subtract token embeddings and arrive at
+interesting results. The most famous example is the formula:
 ```
-
-You can also try Meta's Code Llama models even if support for them is incomplete. In particular, some hyperparameters changed (e.g. the constant in RoPE layer), so the inference is not exactly correct and a bit buggy right now. Looking into fixes. Make sure to build the tokenizer for the plain and instruct variants and pass it when doing inference.
-
-```bash
-python export.py codellama2_7b.bin --meta-llama /path/to/CodeLlama-7b
-python tokenizer.py --tokenizer-model=/path/to/CodeLlama-7b/tokenizer.model
-./run codellama2_7b.bin -z /path/to/CodeLlama-7b/tokenizer.bin
+  "king" - "man" + "woman" =~ "queen"
 ```
+In simple cases this does also work for the token embeddings used in Llama2.
+Since there are no real embedding vectors for the input words readily available,
+they first have to be generated from appropriate prompts passed to the model.
+```python
+# run llama2_7b.bin -m distance
 
-Chat with Code Llama Instruct:
-
-```bash
-python export.py codellama2_7b_instruct.bin --meta-llama /path/to/CodeLlama-7b-Instruct
-python tokenizer.py --tokenizer-model=/path/to/CodeLlama-7b-Instruct/tokenizer.model
-./run codellama2_7b_instruct.bin -m chat -z /path/to/CodeLlama-7b-Instruct/tokenizer.bin
+Generate word embeddings for (An adult boy is a../An adult girl is a../Long live the..):
+      ' man':[3241: 15.7592, 3971: 13.2780, 2042: 12.7931], TOP:[(' man', 13), (' person', 5), (' male', 4), (' young', 3), (' boy', 3)]
+    ' woman':[3971: 10.9111, 2716: 10.0269, 3241: 8.8118], TOP:[(' woman', 19), (' female', 4), (' girl', 4), (' young', 3), (' person', 3)]
+     ' king':[2357: 15.9136, 1176: 13.5898, 3684: 11.6004], TOP:[(' king', 6), (' King', 6), (' Queen', 4), (' queen', 1), (' ', 1)]
+Calculate ' man' - ' woman' + ' king' =~ ' queen':
+    ' queen':[2357: 16.9034, 1176: 15.5252, 3684: 14.9234], TOP:[(' queen', 20), (' Queen', 19), (' prin', 1), (' women', 1), (' King', 0)]
 ```
+This shows how the transformer model can do internal arithmetic with
+these embedding matrices (as long as they are normalized in the same way).
 
-## hugginface models
+The transformer learns patterns in the embedded space. That means that
+whatever it learns to do with one token, automatically gets applied to
+tokens with comparable embedding features.
 
-We can load any huggingface models that use the Llama 2 architecture. See the script [export.py](export.py) and the `--hf` flag to export the model .bin file.
+Layers & Residual Connection
+============================
+Each layer runs once for each new token (the LLama2-7B model has 32 layers).
+The output of each layer is added to the input of the layer (this is called
+a residual connection).
+Residual connections (popularized by [ResNet (2015)](https://arxiv.org/pdf/1512.03385.pdf))
+seem to give a better accuracy for deeper networks with many layers.
 
-## models
-
-For the sake of examples of smaller, from-scratch models, I trained a small model series on TinyStories. All of these trained in a few hours on my training setup (4X A100 40GB GPUs). The 110M took around 24 hours. I am hosting them on huggingface hub [tinyllamas](https://huggingface.co/karpathy/tinyllamas), both in the original PyTorch .pt, and also in the llama2.c format .bin:
-
-| model | dim | n_layers | n_heads | n_kv_heads | max context length | parameters | val loss | download
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 260K | 64 | 5 | 8 | 4 | 512 | 260K | 1.297 | [stories260K](https://huggingface.co/karpathy/tinyllamas/tree/main/stories260K)
-| OG | 288 | 6 | 6 | 6 | 256 | 15M | 1.072 | [stories15M.bin](https://huggingface.co/karpathy/tinyllamas/resolve/main/stories15M.bin) |
-| 42M| 512 | 8 | 8 | 8 | 1024 | 42M | 0.847 | [stories42M.bin](https://huggingface.co/karpathy/tinyllamas/resolve/main/stories42M.bin) |
-| 110M| 768 | 12 | 12 | 12 | 1024 | 110M | 0.760 | [stories110M.bin](https://huggingface.co/karpathy/tinyllamas/resolve/main/stories110M.bin) |
-
-You'll notice that the 110M model is equivalent to GPT-1 in size. Alternatively, this is also the smallest model in the GPT-2 series (`GPT-2 small`), except the max context length is only 1024 instead of 2048. The only notable changes from GPT-1/2 architecture is that Llama uses RoPE relatively positional embeddings instead of absolute/learned positional embeddings, a bit more fancy SwiGLU non-linearity in the MLP, RMSNorm instead of LayerNorm, bias=False on all Linear layers, and is optionally multiquery (but this is not yet supported in llama2.c).
-
-## training
-
-Let's see how we can train a baby Llama 2 from scratch using the code in this repo. First let's download and pretokenize some source dataset, e.g. I like [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) so this is the only example currently available in this repo. But it should be very easy to add datasets, see the code.
-
-```bash
-python tinystories.py download
-python tinystories.py pretokenize
-```
-
-Then train our model:
-
-```bash
-python train.py
-```
-
-**brief training guide**. See the train.py script for more exotic launches and hyperparameter overrides. Here is a brief guide to how to set the parameters. Look at the table at the very end of the [Chinchilla paper](https://arxiv.org/abs/2203.15556) to get a sense of how the Transformer parameters (dim, n_layers, n_heads) grow or shrink together. Extrapolate/interpolate this pattern to get bigger or smaller transformers. Set the max context length however you wish, depending on the problem: this should be the max number of tokens that matter to predict the next token. E.g. Llama 2 uses 2048. Next, you want the _total_ batch size per update (printed by the script as "tokens per iteration will be:") to be somewhere around 100K tokens for medium-sized applications. For tiny applications it could be lower, for large training (e.g. GPTs/LLamas) it is usually ~0.5M, or even more. You get there by first maxing out the batch_size to whatever your system allows (e.g. mine was 16 in a recent run because after that my GPU runs out of memory), and then you want to increase gradient_accumulation_steps to be as high as necessary to reach the total batch size of ~100K. Finally, you want to tune your learning_rate (LR). You want this to be as high as your training allows. Very small networks can get away with a large LR (e.g. 1e-3 or even higher). Large networks need lower LRs. 3e-4 is a safe choice in most medium-sized applications, but can be too low for small networks, so try to increase it! Finally, max_iters is the length of training. Play with different settings. I mostly only ever tune these parameters and leave most of the others unchanged. Here is an example of how I trained the 110M model, which I don't think is anywhere near optimal, but looked sensible to me: dim 768, n_layers 12, n_heads 12 (so size of each head is 768 / 12 = 64 channels), seq len of 1024, batch size 16 (this is the most that fit my A100 40GB GPU), gradient_accumulation_steps = 8 was needed to get total tokens batch size to be 16 batch size * 1024 tokens in sequence * 8 grad_accum = 131,072 tokens per update. Good. Learning rate 4e-4 (probably a little too low). max_iters 200K (probably a bit too high). Dropout 0.1, as that usually helps a bit at medium size. That was it. I ran using Distributed Data Parallel (DDP) on 4 GPUs on my cloud machine, training took ~day or so.
-
-Totally understand if you want to skip model training, for simple demo just download one of the pretrained models (see [models](#models) section), e.g.:
-
-```bash
-wget https://huggingface.co/karpathy/tinyllamas/resolve/main/stories15M.bin
-```
-
-Once we have the model.bin file, we can inference in C. Compile the C code first:
-
-```bash
-make run
-```
-
-You can now run it simply as
-
-```bash
-./run stories15M.bin
-```
-
-Watch the tokens stream by, fun! We can also run the PyTorch inference script for a comparison. Download one of the models again from huggingface hub and point the `sample.py` script at it:
-
-```bash
-wget https://huggingface.co/karpathy/tinyllamas/resolve/main/stories15M.pt -P out15M
-python sample.py --checkpoint=out15M/stories15M.pt
-```
-
-Which gives the same results.
-
-## custom tokenizers
-
-In everything above, we've assumed the custom Lllama 2 tokenizer with 32,000 tokens. However, in many boutique LLMs, using vocabulary this big might be an overkill. If you have a small application you have in mind, you might be much better off training your own tokenizers. This can make everything nicer - with smaller vocabs your model has fewer parameters (because the token embedding table is a lot smaller), the inference is faster (because there are fewer tokens to predict), and your average sequence length per example could also get smaller (because the compression is a lot more efficient on your data). So let's see how we train a custom tokenizer.
-
-By default, to pretokenize the tinystories dataset we had to run, in order:
+In the example below the weights for each layer are shown for the transformer
+"no"->"doubt" transaction. All the intermediate weights are mapped back to
+the vocabulary to show their influence on the changing probabilities for
+the resulting output.
 
 ```
-python tinystories.py download
-python tinystories.py pretokenize
+# run llama2_7b.bin -s 1 -t 0.0 -i "There is no" -m generate_layers -n 4
+```
+<table><tr><td> Layer result </td><td> Added weights </td></tr><tr><td>
+
+```python
+ ' no':[(' a', 33), (' no', 22), (' an', 6), (' nothing', 3), (' something', 3)]
+ E:[(' longer', 39), ('isy', 20), (' matter', 5), ('ises', 1), ('zz', 1)]
+ 0:[(' matter', 11), (' one', 8), (' longer', 4), ('veis', 3), ('isy', 3)]
+ 1:[(' longer', 16), (' matter', 9), (' one', 2), ('isy', 1), ('❯', 1)]
+ 2:[(' longer', 15), ('frak', 1), ('oks', 1), (' Gé', 0), ('ises', 0)]
+ 3:[(' longer', 10), ('frak', 0), (' XIII', 0), ('oks', 0), ('penas', 0)]
+ 4:[(' longer', 1), ('frak', 1), ('ijst', 1), ('penas', 0), ('kaf', 0)]
+ 5:[('ijst', 1), (' longer', 0), (' need', 0), (' Marshall', 0), ('curr', 0)]
+ 6:[('frak', 1), ('uta', 1), (' Marshall', 0), ('penas', 0), ('curr', 0)]
+ 7:[('frak', 1), ('‭', 0), ('∆', 0), ('⅓', 0), ('penas', 0)]
+ 8:[('penas', 2), ('‭', 1), (' Marshall', 0), (' limit', 0), (' Gemeins', 0)]
+ 9:[('penas', 2), ('월', 1), (' Marshall', 1), (' matter', 1), (' Gemeins', 0)]
+10:[(' Bedeut', 6), ('penas', 1), (' Gemeins', 1), (' matter', 0), (' limit', 0)]
+11:[(' matter', 1), (' Bedeut', 1), ('penas', 1), (' limit', 0), ('∙', 0)]
+12:[(' limit', 2), (' Bedeut', 1), (' matter', 1), (' longer', 1), (' Gemeins', 1)]
+13:[('daten', 1), ('Script', 1), (' zvuky', 0), (' longer', 0), (' such', 0)]
+14:[(' doubt', 2), (' limit', 1), (' hidden', 1), (' zvuky', 1), (' need', 0)]
+15:[(' zvuky', 3), (' limit', 2), (' doubt', 2), (' longer', 1), (' such', 1)]
+16:[(' doubt', 4), (' limit', 4), (' Хронологија', 4), (' such', 3), (' zvuky', 2)]
+17:[(' doubt', 15), (' den', 11), (' better', 8), (' zvuky', 2), (' such', 2)]
+18:[(' den', 56), (' doubt', 10), (' better', 10), (' Den', 1), (' such', 1)]
+19:[(' den', 50), (' doubt', 34), (' better', 3), (' such', 0), (' question', 0)]
+20:[(' den', 44), (' doubt', 39), (' better', 8), (' question', 1), (' longer', 0)]
+21:[(' doubt', 46), (' den', 35), (' better', 11), (' longer', 0), (' question', 0)]
+22:[(' doubt', 68), (' den', 20), (' better', 2), (' such', 2), (' question', 0)]
+23:[(' doubt', 70), (' den', 21), (' better', 1), (' such', 1), (' zvuky', 0)]
+24:[(' doubt', 76), (' den', 16), (' better', 1), (' such', 0), ('❯', 0)]
+25:[(' doubt', 59), (' den', 30), (' better', 3), (' such', 1), (' zvuky', 0)]
+26:[(' den', 43), (' doubt', 41), (' better', 4), (' such', 2), (' dear', 0)]
+27:[(' den', 23), (' better', 23), (' such', 8), (' doubt', 7), (' dear', 3)]
+28:[(' den', 30), (' doubt', 10), (' better', 9), (' such', 5), (' dear', 5)]
+29:[(' den', 33), (' doubt', 26), (' better', 6), (' dear', 4), (' mist', 2)]
+30:[(' den', 37), (' doubt', 12), (' better', 11), (' such', 10), (' one', 2)]
+31:[(' doubt', 13), (' better', 4), (' den', 4), (' question', 3), (' such', 2)]
 ```
 
-The `pretokenize` stage here loads the Llama 2 tokenizer (vocab size 32,000) and uses it to convert the downloaded text into integers, and saves that to file. We now change this as follows, to train an example 4096-token tokenizer:
+</td><td>
 
-```
-python tinystories.py download
-python tinystories.py train_vocab --vocab_size=4096
-python tinystories.py pretokenize --vocab_size=4096
-```
+```python
 
-The `train_vocab` stage will call the `sentencepiece` library to train the tokenizer, storing it in a new file `data/tok4096.model`. I tried to reproduce as well as I could the settings that (I think) Meta used to train their vocabulary. This uses the Byte Pair Encoding algorithm that starts out with raw utf8 byte sequences of the text data and then iteratively merges the most common consecutive pairs of tokens to form the vocabulary. Inspect the `tinystories.py` file - the custom tokenizers are stored in a special directory structure indexed by the vocab size.
 
-A quick note of interest is that vocab size of 4096 trained specifically on tinystories creates integer sequences with about the same sequence length per example as the default Llama 2 tokenizer of 32000 tokens! This means that our custom, tailored tokenizer is a lot better adapted to our specific text, and can compress it very effectively. So our trained models are smaller and faster.
-
-Now that we have pretokenized the dataset with our custom tokenizer, we can train the model. The training script `train.py` doesn't care about the exact tokens, it only cares about the vocabulary size so it can correctly initialize the model. So when training your model, make sure to pass in
-
-```
-python train.py --vocab_source=custom --vocab_size=4096
-```
-
-(The defaults are `llama2` and `32000` respectively, which indicates the default Llama 2 tokenizer). This trains the model. Finally we are ready to run inference with our `run.c` script. For that we need two things. Number one, we have to export our tokenizer in the `.bin` format, do that with:
-
-```
-python tokenizer.py --tokenizer-model=data/tok4096.model
-```
-
-This writes the tokenizer to `data/tok4096.bin`. Now we can run inference, pointing it to this tokenizer using the `-z` flag:
-
-```
-./run out/model.bin -z data/tok4096.bin
-```
-
-This should print the samples. If you leave out the `-z` flag, it will use the default Llama 2 tokenizer, which would generate a good sequence of integers, but they would get translated using a different vocabulary to text, so it would look like gibberish.
-
-## performance
-
-There are many ways to potentially speed up this code depending on your system. Have a look at the [Makefile](Makefile), which contains a lot of notes. The `make run` command currently uses the `-O3` optimization by default, i.e.:
-
-```bash
-gcc -O3 -o run run.c -lm
-```
-
--O3 includes optimizations that are expensive in terms of compile time and memory usage. Including vectorization, loop unrolling, and predicting branches.
-
-To get a much better performance, try to compile with `make runfast`. This turns on the `-Ofast` flag, which includes additional optimizations that may break compliance with the C/IEEE specifications, in addition to `-O3`. See [the GCC docs](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html) for more information.
-
-Try `-march=native` to compile the program to use the architecture of the machine you're compiling on rather than a more generic CPU. This may enable additional optimizations and hardware-specific tuning such as improved vector instructions/width.
-
-The fastest throughput I saw so far on my MacBook Air (M1) so far is with `make runfast`.
-
-You can also experiment with replacing `gcc` with `clang`.
-
-If compiling with gcc, try experimenting with `-funroll-all-loops`, see PR [#183](https://github.com/karpathy/llama2.c/pull/183)
-
-**OpenMP**. Big improvements can also be achieved by compiling with OpenMP, which "activates" the `#pragma omp parallel for` inside the matmul and attention, allowing the work in the loops to be split up over multiple processors.
-You'll need to install the OpenMP library and the clang compiler first (e.g. `apt install clang libomp-dev` on ubuntu). Then you can compile with `make runomp`, which does:
-
-```bash
-clang -Ofast -fopenmp -march=native run.c  -lm  -o run
+ADDED:[(' matter', 4), ('瀬', 2), ('씨', 2), (' longer', 2), (' entferne', 2)]
+ADDED:[(' matter', 1), (' cur', 0), (' Amazon', 0), ('theless', 0), ('íd', 0)]
+ADDED:[(' recens', 2), (' Mundo', 0), ('江', 0), (' Senate', 0), ('uni', 0)]
+ADDED:[('明', 1), ('kaf', 1), ('ct', 1), ('木', 0), ('cen', 0)]
+ADDED:[('OF', 2), ('otte', 1), (' Wille', 1), ('♣', 0), (' Dou', 0)]
+ADDED:[('lia', 2), ('DL', 1), ('Controller', 1), (' beskre', 0), (' Liver', 0)]
+ADDED:[('éma', 3), ('gems', 1), ('enth', 1), (' Janu', 1), ('bst', 0)]
+ADDED:[('css', 2), ('戸', 0), (' AF', 0), ('➜', 0), ('➖', 0)]
+ADDED:[('aze', 3), (' Hö', 1), ('SERT', 0), ('umar', 0), ('зо', 0)]
+ADDED:[(' Википеди', 3), ('hrte', 1), ('embly', 0), ('BIT', 0), (' Хронологија', 0)]
+ADDED:[(' demselben', 1), (' cluster', 0), (' Bedeut', 0), ('wire', 0), (' next', 0)]
+ADDED:[('Portail', 2), ('씨', 1), ('"?>', 1), (' doubt', 1), ('ге', 0)]
+ADDED:[('lei', 3), ('郡', 0), ('wig', 0), ('oge', 0), (' embed', 0)]
+ADDED:[(' Bras', 1), ('auer', 0), (' Tir', 0), (' alb', 0), ('cala', 0)]
+ADDED:[('anterie', 1), ('isecond', 1), ('Ћ', 1), ('ambiguation', 0), ('ROUP', 0)]
+ADDED:[('如', 3), (' Хронологија', 2), ('rita', 1), ('AA', 1), ('广', 1)]
+ADDED:[('stract', 6), ('edor', 3), ('uche', 3), ('fog', 2), (' Хронологија', 2)]
+ADDED:[(' better', 63), (' den', 3), ('igny', 1), (' Sug', 1), (' esc', 1)]
+ADDED:[(' den', 48), (' len', 1), (' Duch', 0), (' better', 0), (' estaven', 0)]
+ADDED:[(' doubt', 19), (' question', 9), (' perfect', 5), ('question', 1), ('Ḩ', 0)]
+ADDED:[(' longer', 17), (' better', 6), (' wonder', 3), (' question', 2), (' doubt', 1)]
+ADDED:[(' sierp', 3), (' kwiet', 2), ('textt', 1), ('DateFormat', 1), ('egründ', 1)]
+ADDED:[(' short', 54), (' such', 14), ('short', 12), (' dear', 4), ('Short', 1)]
+ADDED:[('olo', 2), ('ROUP', 2), ('ienst', 1), ('ivo', 0), ('ielt', 0)]
+ADDED:[(' standard', 7), ('standard', 5), (' uniform', 5), ('uniform', 3), ('autorité', 3)]
+ADDED:[(' right', 5), (' just', 3), (' Right', 3), ('ście', 1), (' substring', 1)]
+ADDED:[('erten', 1), (' Justice', 0), ('ℓ', 0), (' short', 0), (' ones', 0)]
+ADDED:[(' c', 71), ('d', 10), (' DO', 0), (' more', 0), (' g', 0)]
+ADDED:[(' single', 10), (' bet', 2), ('photo', 1), (' photo', 1), ('Photo', 0)]
+ADDED:[(' Do', 63), (' do', 6), ('Do', 3), ('do', 2), (' doub', 1)]
+ADDED:[(' ', 29), (' (', 15), (' "', 10), (' F', 7), (' W', 5)]
+ADDED:[(' dispute', 0), (' shame', 0), (' guarantee', 0), (' criticism', 0), (' guaranteed', 0)]
 ```
 
-When you run inference make sure to use OpenMP flags to set the number of threads, e.g.:
+</td></tr></table>
 
-```bash
-OMP_NUM_THREADS=4 ./run out/model.bin
+This shows that each layer has a different influence on the model, and
+that it would be possible to modify existing layers for fine-tuning.
+(see for example: [LoRA: Low-Rank Adaptation (Hu et al., 2021)](https://arxiv.org/pdf/2106.09685.pdf))
+
+Transformer Model
+=================
+Since the introduction of the original paper [Attention is all you need (Vaswani et al., 2017)](https://arxiv.org/pdf/1706.03762) from Google,
+many [large language models (LLM)](https://en.wikipedia.org/wiki/Large_language_model) use the transformer model to build
+[generative pre-trained transformers](https://en.wikipedia.org/wiki/Generative_pre-trained_transformers) like ChatGPT.
+
+The [LLama](https://arxiv.org/pdf/2302.13971.pdf) architecture follows that of the transformer, but it uses only the decoder stack.
+
+Transformer Model            | => | GPT/Llama Model
+-----------------------------|:--:|---------------------------
+![](assets/transformer1.png) |    | ![](assets/transformer2.png)
+
+Descriptions for different aspects of the transformer model can be found here:
+
+* [LLM Basics: Embedding Spaces—Transformer Token Vectors Are Not Points in Space (Nicky Pochinkov, 2023)](https://www.greaterwrong.com/posts/pHPmMGEMYefk9jLeh/llm-basics-transformer-token-vectors-are-not-points-in-space)
+* [Transformer’s Encoder-Decoder (Shibuya, 2021)](https://kikaben.com/transformers-encoder-decoder/)
+
+The transformer models differ in size and in the algorithms used to connect
+the layers of the model. The parameters of a model are often described in a
+model card. The LLama2 model is described in this
+[Llama2 Model Card](https://github.com/facebookresearch/llama/blob/main/MODEL_CARD.md).
+
+The transformers library can also show the basic structure of a model:
+```python
+from transformers import LlamaForCausalLM
+LlamaForCausalLM.from_pretrained('7b')
+
+LlamaForCausalLM(
+  (model): LlamaModel(
+    (embed_tokens): Embedding(32000, 4096)
+    (layers): ModuleList(
+      (0-31): 32 x LlamaDecoderLayer(
+        (self_attn): LlamaAttention(
+          (q_proj): Linear(in_features=4096, out_features=4096, bias=False)
+          (k_proj): Linear(in_features=4096, out_features=4096, bias=False)
+          (v_proj): Linear(in_features=4096, out_features=4096, bias=False)
+          (o_proj): Linear(in_features=4096, out_features=4096, bias=False)
+          (rotary_emb): LlamaRotaryEmbedding()
+        )
+        (mlp): LlamaMLP(
+          (gate_proj): Linear(in_features=4096, out_features=11008, bias=False)
+          (up_proj): Linear(in_features=4096, out_features=11008, bias=False)
+          (down_proj): Linear(in_features=11008, out_features=4096, bias=False)
+          (act_fn): SiLUActivation()
+        )
+        (input_layernorm): LlamaRMSNorm()
+        (post_attention_layernorm): LlamaRMSNorm()
+      )
+    )
+    (norm): LlamaRMSNorm()
+  )
+  (lm_head): Linear(in_features=4096, out_features=32000, bias=False)
+)
 ```
 
-Depending on your system resources you may want to tweak these hyperparameters and use more threads. But more is not always better, usually this is a bit U shaped. In particular, if your CPU has SMT (multithreading), try setting the number of threads to the number of physical cores rather than logical cores. The performance difference can be large due to cache thrashing and communication overhead. The PyTorch documentation [CPU specific optimizations
-](https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html#cpu-specific-optimizations) has some good information that applies here too.
+Decoder Block
+=============
+From an implementation point of view, most parts of the model can be
+handled like a black box. Since the weights are pre-trained for the
+involved algorithms, not much can be changed for an inference run.
 
-## platforms
+The de-embedding step back to the vocabulary is done via the language
+modelling head `lm_head`. For pre-training this head is exchanged with
+a classification head.
 
-On **Windows**, use `build_msvc.bat` in a Visual Studio Command Prompt to build with msvc, or you can use `make win64` to use mingw compiler toolchain from linux or windows to build the windows target. MSVC build will automatically use openmp and max threads appropriate for your CPU unless you set `OMP_NUM_THREADS` env.
+The transformer is trained using gradient descent with respect to some loss function.
+See: [An overview of gradient descent optimization algorithms (Ruder, 2017)](https://arxiv.org/pdf/1609.04747.pdf)
 
-On **Centos 7**, **Amazon Linux 2018** use `rungnu` Makefile target: `make rungnu` or `make runompgnu` to use openmp.
+Each projection to and from an embedded space in the model involves a
+[matrix multiplication](https://en.wikipedia.org/wiki/Matrix_multiplication).
+For a matrix multiplication, the number of columns in the first matrix
+(the dimension) must be equal to the number of rows in the second matrix.
+The resulting matrix has the number of rows of the first and the number
+of columns of the second matrix. So these projections are used to change
+between the embedding dimension and the hidden dimensions of the model.
 
-On **Mac**, use clang from brew for openmp build. Install clang as `brew install llvm` and use the installed clang binary to compile with openmp: `make runomp CC=/opt/homebrew/opt/llvm/bin/clang`
+The matrix multiplications are the most expensive operations of the
+transformer model. They can be offloaded to the tensor cores of GPUs
+to speed up training & inference. For example this is done using
+[CUDA](https://en.wikipedia.org/wiki/CUDA) libraries with instructions
+like [SGEMM](https://github.com/NervanaSystems/maxas/wiki/SGEMM)
+to speed up matrix multiplications.
 
-## tests
+When GPUs are involved the size of the model becomes more important,
+because the model-data has to fit into the memory of the cards.
+For this reason projects like [llama.cpp](https://github.com/ggerganov/llama.cpp)
+use quantized versions of the models, where the weights are encoded
+in 4-bit integers or even less bits, instead of using float16/float32
+values.
 
-You can run tests simply with pytest:
+Self-Attention
+==============
+The Transformer uses a "Scaled Dot-Product Attention" to calculate the
+distance between a key vector for the current position and the query
+vectors for each preceding position in the context window
+(see the [original transformer paper](https://arxiv.org/pdf/1706.03762.pdf#figure.2)).
+This works similar to the cosine_similarity example for the embedding
+vectors shown above.
 
-```bash
-$ pip install pytest
-$ pytest
+Attention is the only place where a model looks at the other tokens from
+the input sequence. The vectors alone do not take the position of the
+preceding tokens into account. This is done by an additional positional
+encoding that adds information about the relative distance between the
+current token and the preceding tokens to the key and query vectors
+(see [Positional Encoding](#positional-encoding) section below).
+The arithmetic on these vectors then also takes the distance between
+the tokens into account.
+
+A good explaination of the basic self-attention process can be found in
+[The Illustrated GPT-2](http://jalammar.github.io/illustrated-gpt2/).
+
+The embedding vector of each token is used to get the query, key and
+value vectors Q, K and V of the same dimension. These vectors are projections
+from the learned model matrices `wq`, `wk` & `wv` which are distinct
+for each token and each layer. When Q, K, and V all come from the same
+source token, this is called self-attention (the original transformer was
+developed for text-translation, where the key and value vectors could come
+from a separate encoder source).
+
+* the Query vector Q is a representation of the current token used
+  to score against the key vectors of all the preceding tokens.
+  Only the query vector Q of the currently processed token is used in each
+  transformer step.
+* the Key vectors K are like labels for all the preceding tokens.
+  They are matched against in the search for relevant tokens. Multiplying
+  the query vector by the key vector produces a score.
+* the Value vectors V are actual token representations. Once it is
+  scored how relevant each preceding token is, these values are multiplied
+  by the probability of the scores and added up to build the representation
+  vector for the current token.
+
+Lookup by Query Vector                      | => | Results in Value Vectors weighted by score
+--------------------------------------------|:--:|-------------------------------------------
+![](assets/transformer_self-attention1.png) |    | ![](assets/transformer_self-attention2.png)
+
+The scores from the start of the context window up to the position of the
+current token are called attention vector. The attention vector is converted
+to probabilities using `softmax` before the value vectors are processed.
+Leftward positions up to the context window size are ignored (or masked out).
+
+```c
+memset(out, 0, k_size * sizeof(float));
+
+for (int t = 0; t <= pos; t++) {
+    float *k = &key[t * k_size]; // key vector for position
+    float score = 0.0f;
+    for (int i = 0; i < k_size; i++) {
+        score += query[i] * k[i]; // dot product of query and key
+    }
+    att[t] = score / sqrt(k_size); // scale
+}
+softmax(att, pos + 1);
+for (int t = 0; t <= pos; t++) {
+    float *v = &value[t * k_size]; // value vector for position
+    for (int i = 0; i < k_size; i++) {
+        out[i] += att[t] * v[i]; // accumulate weighted value
+    }
+}
 ```
 
-This will currently invoke two tests inside `test_all.py`, which forward the model in both C and Python for 200 steps and check the output against a known good expected output. The tests currently run in only a few seconds, but will have to download and cache the stories260K models in a temporary `test` directory (only ~2MB download).
+Here is an illustration showing the changing attention on differents parts
+of an input sentence from an older paper on [Long Short-Term Memory-Networks (2016)](https://arxiv.org/pdf/1601.06733.pdf#figure.caption.1):
 
-There are also some tests in C, in the file [test.c](test.c). You can run these with `make testcc`, or to see more stuff printed:
+![Image from LSTMN reading Sentence](assets/transformer_attention.png)
 
+When this example is used to examine the attention vectors used in the
+LLama2 model, the results look a little different. Since LLama2 uses tokens
+instead of full words and has multiple layers and heads, this can only be
+a snapshot of one part of the model. The attention vectors for layer-0/head-0
+still shows lower probabilities for the words "is", "a", "on" and the "F" from
+FBI. So they are less relevant when the result is calculated. It also shows the
+change of probabilities for preceding tokens when the next token is queried:
+
+```python
+# run llama2_7b.bin -s 1 -t 0.0 -i "The FBI is chasing a criminal on the" -m generate_attention
+         <s>: A[0,0]:[ 1.0000]
+         The: A[0,0]:[ 0.9835,  0.0165]
+           F: A[0,0]:[ 0.5245,  0.0171,  0.4584]
+          BI: A[0,0]:[ 0.1878,  0.0222,  0.5940,  0.1960]
+          is: A[0,0]:[ 0.4877,  0.0171,  0.2030,  0.0670,  0.2251]
+          ch: A[0,0]:[ 0.2248,  0.0290,  0.1739,  0.0966,  0.2709,  0.2049]
+       asing: A[0,0]:[ 0.1346,  0.0388,  0.1617,  0.1120,  0.2573,  0.2921,  0.0037]
+           a: A[0,0]:[ 0.2931,  0.0197,  0.0959,  0.0447,  0.1295,  0.1049,  0.0035,  0.3087]
+    criminal: A[0,0]:[ 0.1018,  0.0297,  0.0832,  0.0539,  0.0998,  0.1088,  0.0058,  0.4922,  0.0247]
+          on: A[0,0]:[ 0.1838,  0.0187,  0.0921,  0.0416,  0.1101,  0.0874,  0.0067,  0.2776,  0.0207,  0.1613]
+         the: A[0,0]:[ 0.2390,  0.0136,  0.0679,  0.0337,  0.0799,  0.0547,  0.0066,  0.1241,  0.0165,  0.1074,  0.2566]
+         run: A[0,0]:[ 0.0743,  0.0157,  0.0431,  0.0300,  0.0603,  0.0431,  0.0148,  0.0767,  0.0189,  0.1219,  0.3458,  0.1554]
+                       The      F        BI       is       ch       asing    a        criminal on       the      run      .
 ```
-make testcc VERBOSITY=1
+
+Multi-Head Attention
+====================
+LLama uses `n_heads` heads for the attention calculation (32 for LLama2-7b).
+This splits the Q, K and V vectors in 32 parts (of dimension 4096/32=128),
+which can run in in parallel. The resulting vectors are merged to a single
+result again, after the multi-head attention for a layer completed.
+
+The results are mapped back from the attention representation to an embedding
+vector with the learned `wo` transformation from the model.
+
+Scaled Dot-Product Attention                             | => | Multi-Head Attention
+---------------------------------------------------------|:--:|-------------------------------------------
+![](assets/transformer_scaled_dot_product_attention.png) |    | ![](assets/transformer_multi-head-attention.png)
+
+* [Are Sixteen Heads Really Better than One? (Michel et al., 2019)](https://arxiv.org/pdf/1905.10650.pdf)
+* [Fast Transformer Decoding: One Write-Head is All You Need (Shazeer, 2019)](https://arxiv.org/pdf/1911.02150.pdf)
+* [GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints (Ainslie et al., 2023)](https://arxiv.org/pdf/2305.13245.pdf)
+
+The bigger LLama2-70b model uses Grouped Query Attention (GQA). This
+reuses key & value weights in the attention layers, and reduces the
+size of the model.
+* the count of GQA groups per layer is equal to the number of key & value
+  matrices per head. The number of query matrices does not change.
+* Llama2-70b applies the same number of groups across all layers.
+  (4 key/value groups with 8 query matrices each).
+* this is the `n_kv_heads` parameter in [llama2.c](run.c)
+
+Positional Encoding
+===================
+The embedding vector for each token represents a point in an n-dimensional
+space of size `dim`. The transformer projects this vector into a representation
+vector of the same size with `dim/2` (x, y) tuples, which can be interpreted
+as points in a 2-dimensional coordinate system. These are the key & query
+vectors projected from the `wk` & `wq` matrices used in [Self-Attention](#self-attention),
+
+The original transformer uses sine and cosine functions of different frequencies
+for positional encoding. These positional values are in the range [-1:1].
+The values at the end of the position vector converge to (x=1, y=0). The values
+at the start of the position vector are more spread out for higher positions
+in the context window.
+
+```python
+# run llama2_7b.bin -m position -n 8
+ 0: cos:[ 1.0000,  1.0000,  1.0000,  1.0000,  1.0000, ...,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000]
+ 0: sin:[ 0.0000,  0.0000,  0.0000,  0.0000,  0.0000, ...,  0.0000,  0.0000,  0.0000,  0.0000,  0.0000]
+ 1: cos:[ 0.5403,  0.5441,  0.5478,  0.5515,  0.5552, ...,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000]
+ 1: sin:[ 0.8415,  0.8390,  0.8366,  0.8342,  0.8317, ...,  0.0001,  0.0001,  0.0001,  0.0001,  0.0001]
+ 2: cos:[-0.4161, -0.4080, -0.3998, -0.3916, -0.3835, ...,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000]
+ 2: sin:[ 0.9093,  0.9130,  0.9166,  0.9201,  0.9236, ...,  0.0002,  0.0002,  0.0002,  0.0002,  0.0002]
+ 3: cos:[-0.9900, -0.9880, -0.9858, -0.9835, -0.9810, ...,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000]
+ 3: sin:[ 0.1411,  0.1544,  0.1677,  0.1808,  0.1938, ...,  0.0003,  0.0003,  0.0003,  0.0003,  0.0003]
+ 4: cos:[-0.6536, -0.6671, -0.6803, -0.6933, -0.7059, ...,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000]
+ 4: sin:[-0.7568, -0.7449, -0.7329, -0.7207, -0.7083, ...,  0.0004,  0.0004,  0.0004,  0.0004,  0.0004]
+ 5: cos:[ 0.2837,  0.2621,  0.2405,  0.2188,  0.1972, ...,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000]
+ 5: sin:[-0.9589, -0.9650, -0.9707, -0.9758, -0.9804, ...,  0.0005,  0.0005,  0.0005,  0.0005,  0.0005]
+ 6: cos:[ 0.9602,  0.9523,  0.9438,  0.9346,  0.9249, ...,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000]
+ 6: sin:[-0.2794, -0.3052, -0.3306, -0.3556, -0.3803, ...,  0.0006,  0.0006,  0.0006,  0.0006,  0.0006]
+ 7: cos:[ 0.7539,  0.7742,  0.7936,  0.8121,  0.8298, ...,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000]
+ 7: sin:[ 0.6570,  0.6330,  0.6085,  0.5835,  0.5580, ...,  0.0007,  0.0007,  0.0007,  0.0007,  0.0007]
 ```
 
-Call for help: help add more tests.
+The original transformer uses absolute positional encoding and adds the
+position information to the values of the reprensentation vector. So
+these values would appear on a circle around the original (x,y) tuples.
+See: [The Illustrated Transformer (Jay Alammar, 2019)](http://jalammar.github.io/illustrated-transformer/)
 
-## ack
+![Image from Wikipedia Sine](assets/transformer_sincos.png)
 
-I trained the llama2.c storyteller models on a 4X A100 40GB box graciously provided by the excellent [Lambda labs](https://lambdalabs.com/service/gpu-cloud), thank you.
+LLama uses Rotary Position Embeddings (RoPE).
 
-## discord
+RoPE, encodes absolute positional information with a rotation matrix and
+naturally incorporates explicit relative position dependency. This also
+locates the (x, y) tuples on a circle.
 
-Figured it's possible to reuse my existing discord channel (that I use for my [zero to hero youtube series](https://karpathy.ai/zero-to-hero.html)), see #llama2c channel on [discord](https://discord.gg/3zy8kqD9Cp), for any quick questions, related discussions, etc.
+According to the paper one property of rope is long-term decay when the
+relative position increases. So a pair of tokens with a long relative
+distance should have less connection.
+See: [RoFormer: Enhanced transformer with Rotaty Position Embedding (Su et al., 2021)](https://arxiv.org/pdf/2104.09864v4.pdf):
 
-## contributing
+<table><tr><td> Original positional encoding </td><td> RoPE encoding (2d-matrix rotation) </td></tr><tr><td>
 
-A few words on this repo and the kinds of PRs that are likely to be accepted. What is the goal of this repo? Basically I think there will be a lot of interest in training or finetuning custom micro-LLMs (think ~100M - ~1B params, but let's say up to ~10B params) across a large diversity of applications, and deploying them in edge-adjacent environments (think MCUs, phones, web browsers, laptops, etc.). I'd like this repo to be the simplest, smallest, most hackable repo to support this workflow, both training and inference. In particular, this repo is not a complex framework with a 1000 knobs controlling inscrutible code across a nested directory structure of hundreds of files. Instead, I expect most applications will wish to create a fork of this repo and hack it to their specific needs and deployment platforms.
+```c
+q[i]   = v0 + cos(val);
+q[i+1] = v1 + sin(val);
+```
 
-People who care about deployment efficiency above all else should look at [llama.cpp](https://github.com/ggerganov/llama.cpp). This repo still cares about efficiency, but not at the cost of simplicity, readability or portability. Basically, I expect that a lot of people come to this repo because the training code is 2 readable .py files and the inference code is 500 lines of C. So I'd like this to continue to be a kind of simplest "reference implementation" that can be easily hacked in a separate fork into whatever downstream application people are excited about. It shouldn't be full-featured. It shouldn't take 100 different options or settings. It shouldn't be the most efficient. A few examples:
+</td><td>
 
-- someone re-ordered two loops to improve data locality for a small efficieny win => instant merge.
-- someone added the one line "pragma omp parallel for", which allows you to compile with OpenMP and dramatically speed up the code, or acts as just a comment if you don't compile it that way => instant merge.
-- bug fixes and touchups etc. => happy to merge
+```c
+q[i]   = v0 * cos(val) - v1 * sin(val);
+q[i+1] = v0 * sin(val) + v1 * cos(val);
+```
 
-A few examples of PRs are that are not an excellent fit:
+</td></tr></table>
 
-- adding more than several #ifdefs all over the place in code. If they are localized / few, might be okay.
-- adding a lot of code that is very specific to some specific platform (e.g. MCUs, or some special version of linux or processor). These may be a better fit for forks of the project, and I am very happy to maintain a list of these forks in section below.
-- adding hundreds of lines of code to run.c that are only active in specific scenarios or platforms.
+For (x, y) tuples further away from the start of the representation vector,
+the points on the circle are more spread out when the position in the
+context window increases (see color gradient for the first 8 tuples of the
+representation vector at different positions in the example below).
 
-If your candidate PRs have elements of these it doesn't mean they won't get merged, it just means they will make it into the gray territory. TLDR: I am eager to merge any mostly small, mostly localized, broadly applicable, clean changes that improve the efficiency and portability of the repo, while keep its hackability and readability. I appreciate all PRs seeking to help me improve the project, thank you! <3.
+Rope Example for single Tupel                                | Rope Embedding (from RoFormer paper)
+-------------------------------------------------------------|----------------------------------------------------
+![Rope Position Example](assets/transformer_circle_rope.png) | ![Rotary Position Embedding](assets/transformer_rope.png)
 
-## notable forks
+When the attention score is calculated, the position encoding is part of
+the (x, y) tuples in the `key` and `query` vectors. The attention multiplies
+the tuple values at the same offset in the `key` and `query` vectors,
+so the 'spread' of the position information at each offset should be similar.
 
-- Rust
-  - [llama2.rs](https://github.com/gaxler/llama2.rs) by @[gaxler](https://github.com/gaxler): a Rust port of this project
-  - [llama2.rs](https://github.com/leo-du/llama2.rs) by @[leo-du](https://github.com/leo-du): A Rust port of this project
-  - [llama2-rs](https://github.com/danielgrittner/llama2-rs) by @[danielgrittner](https://github.com/danielgrittner): a Rust port of this project
-  - [llama2.rs](https://github.com/lintian06/llama2.rs) by @[lintian06](https://github.com/lintian06): A Rust port of this project
-  - [pecca.rs](https://github.com/rahoua/pecca-rs) by @[rahoua](https://github.com/rahoua): A Rust port leveraging [ndarray](https://github.com/rust-ndarray/ndarray), supports BLAS.
-  - [llama2.rs](https://github.com/flaneur2020/llama2.rs) by @[flaneur2020](https://github.com/flaneur2020): A Rust port of this project.
-- Go
-  - [go-llama2](https://github.com/tmc/go-llama2) by @[tmc](https://github.com/tmc): a Go port of this project
-  - [llama2.go](https://github.com/nikolaydubina/llama2.go) by @[nikolaydubina](https://github.com/nikolaydubina): a Go port of this project
-  - [llama2.go](https://github.com/haormj/llama2.go) by @[haormj](https://github.com/haormj): a Go port of this project
-  - [llama2.go](https://github.com/saracen/llama2.go) by @[saracen](https://github.com/saracen): a Go port of this project
-- Android
-  - [llama2.c-android](https://github.com/Manuel030/llama2.c-android): by @[Manuel030](https://github.com/Manuel030): adds Android binaries of this project
-  - [llama2.c-android-wrapper](https://github.com/celikin/llama2.c-android-wrapper): by @[celikin](https://github.com/celikin): added JNI wrapper, PoC
-- C++
-  - [llama2.cpp](https://github.com/leloykun/llama2.cpp) by @[leloykun](https://github.com/leloykun): a C++ port of this project
-- JavaScript
-  - [llama2.js](https://github.com/epicure/llama2.js) by @[epicure](https://github.com/epicure): a JavaScript port of this project
-  - [llama2.ts](https://github.com/wizzard0/llama2.ts) by @[oleksandr_now](https://twitter.com/oleksandr_now): a TypeScript port of this project. Full Llama2-7B capable.
-  - [llama2.c-emscripten](https://github.com/gohai/llama2.c-emscripten) by @[gohai](https://github.com/gohai): Emscripten (JavaScript) port, based on @ggerganov's initial prototype
-- Zig
-  - [llama2.zig](https://github.com/cgbur/llama2.zig) by @[cgbur](https://github.com/cgbur): A Zig port of this project
-  - [llama2.zig](https://github.com/vodkaslime/llama2.zig) by @[vodkaslime](https://github.com/vodkaslime): a Zig port of this project
-  - [llama2.zig](https://github.com/clebert/llama2.zig) by @[clebert](https://github.com/clebert): a Zig port of this project
-- Julia
-  - [llama2.jl](https://github.com/juvi21/llama2.jl) by @[juvi21](https://github.com/juvi21): a Julia port of this project
-- Scala
-  - [llama2.scala](https://github.com/jrudolph/llama2.scala) by @[jrudolph](https://github.com/jrudolph): a Scala port of this project
-- Java
-  - [llama2.java](https://github.com/mukel/llama2.java) by @[mukel](https://github.com/mukel): a Java port of this project
-- Kotlin
-  - [llama2.kt](https://github.com/madroidmaq/llama2.kt) by @[madroidmaq](https://github.com/madroidmaq): a Kotlin port of this project
-- Python
-  - [llama2.py](https://github.com/tairov/llama2.py) by @[tairov](https://github.com/tairov): a simple one file pure Python port of this project with zero dependencies
-- C#
-  - [llama2.cs](https://github.com/trrahul/llama2.cs) by @[trrahul](https://github.com/trrahul): a C# port of this project
-- Dart
-  - [llama2.dart](https://github.com/yiminghan/llama2.dart) by @[yiminghan](https://github.com/yiminghan/llama2.dart): one-file dart port of this project, works with Flutter!
-- Web
-  - [llama2c-web](https://github.com/dmarcos/llama2.c-web) by @[dmarcos](https://github.com/dmarcos): Super simple way to build unmodified llama2.c to WASM and run it in the browser. [Demo](https://diegomarcos.com/llama2.c-web/)
-- WebAssembly
-  - [icpp-llm](https://github.com/icppWorld/icpp-llm): LLMs for the Internet Computer
-- Fortran
-  - [llama2.f90](https://github.com/rbitr/llama2.f90): a Fortran port of this project
-- Mojo
-  - [llama2.🔥](https://github.com/tairov/llama2.mojo) by @[tairov](https://github.com/tairov): pure Mojo port of this project
-- [llama2.c - Llama 2 Everywhere](https://github.com/trholding/llama2.c) by @[trholding](https://github.com/trholding): Standalone, Bootable & Portable Binary Llama 2
-- [llama2.c-zh - Bilingual Chinese and English](https://github.com/chenyangMl/llama2.c-zh) by @[chenyangMl](https://github.com/chenyangMl): Expand tokenizer to support training and inference in both Chinese and English
+Because of the residual connection between the layers, where the input is
+added again to the output of the attention, the positional information does
+not dominate the results.
 
-## unsorted todos
+Feed-Forward Network (FFN)
+==========================
+The transformer model alternates between multi-head attention, and what it calls
+"position-wise feed-forward networks" (FFN). The FFN takes a vector x (the hidden
+representation at a particular position in the sequence) and passes it through
+two learned linear transformations. An activation function is applied between
+the two linear transformations.
+See: [GLU Variants Improve Transformer (Shazeer, 2020)](https://arxiv.org/pdf/2002.05202.pdf)
 
-- add support in run.c of reading version 1+ files from export, later deprecate "version 0"
-- runq.c (int8 quantization) add
-- run.cu (CUDA) investigate and merge
-- add more tests inside [test.c](test.c)
-- add Engine class for use in sample.py that does efficient inference in PyTorch, e.g. KV cache keeping
-- make it easier to add a new dataset with not too much pain
-- (LoRA) finetuning and export of Llama 2 models
+For LLama2-7b the dimension `hidden_dim` of the vectors used in the activation is 11008.
+The projection into the hidden dimension is done with the `w1` & `w3` matrices from
+the model. The transformation back is done with `w2`.
 
-## License
+* The activation function used in LLama and PaLM is [Swish-Gated Linear Unit) (SwiGLU) (2023)](https://www.ai-contentlab.com/2023/03/swishglu-activation-function.html)
+* The original transformer paper used a [Rectified-Linear Unit (ReLU) (2011)](https://proceedings.mlr.press/v15/glorot11a/glorot11a.pdf) activation.
+* The GPT-2 & BERT transformers used a [Gaussian Error Linear Unit (GELU) (2016)](https://arxiv.org/pdf/1606.08415.pdf)
 
-MIT
+SwiGLU is a combination of the Swish and the Gated Linear Units (GLU)
+activation functions.
+
+ReLU & GELU                      | SwiGLU
+---------------------------------|----------------------------
+![](assets/transformer_gelu.png) | ![](assets/transformer_swiglu.png)
+
+Layer Normalization
+===================
+Layer normalization ensures that the inputs for each layer are always within
+a consistent range, which is supposed to speed up and stabilize the training
+process. The values of the matrix are shifted to have a mean of zero and
+scaled to have a unit variance of zero.
+
+<table><tr><td> RMSNorm performance </td><td> Code compared </td></tr><tr><td>
+
+![Image from RMSNorm (2019)](assets/transformer_norm.png)
+
+</td><td>
+
+```c
+LayerNorm:
+  o[j] = weight[j] * ((x[j] - mean) / sqrt(variance + eps));
+```
+```c
+RMSNorm:
+  o[j] = weight[j] * (x[j] / sqrt(mean_square + eps));
+```
+
+</td></tr></table>
+
+* LLama uses [Root Mean Square Layer Normalization (RMSNorm) (Zhang and Sennrich, 2019)](https://arxiv.org/pdf/1910.07467.pdf)
+* The original transformer paper used [Layer Normalization (LayerNorm) (2016)](https://arxiv.org/pdf/1607.06450.pdf)
+* The [RMSNorm](https://github.com/bzhangGo/rmsnorm) python code.
+
+RMSNorm is an extension of LayerNorm. The reason behind using RMSNorm is the
+computational overhead in LayerNorm. It simplifies LayerNorm by removing the
+mean-centering operation, and achieves comparable performance.
+
+Model Quality
+=============
+Many [tests](https://ai.meta.com/llama/) and openly available datasets like
+[MMLU](https://arxiv.org/abs/2009.03300) are used to benchmark the quality of
+a model. One of the most basic measurements to compare models is the perplexity.
+
+The perplexity measures how good the model can reproduce parts of a given
+subset from the trained data. For the LLama model the perplexity is often
+measured against parts of the [WikiText-2 dataset](https://paperswithcode.com/dataset/wikitext-2).
+Lower perplexity is better.
+
+* [Perplexity (PPL) of fixed-length Models](https://huggingface.co/docs/transformers/perplexity)
+* [Evaluation Metrics for Language Modeling (2019)](https://thegradient.pub/understanding-evaluation-metrics-for-language-models/)
+* [A Perplexity Benchmark of llama.cpp (2023)](https://www.xzh.me/2023/09/a-perplexity-benchmark-of-llamacpp.html)
+
+
+By [Barnim Dzwillo](dzwillo@strato.de), October 2023
