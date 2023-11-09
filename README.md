@@ -24,10 +24,6 @@ This was inspired by the walkthrough for other transformer implementations:
 - [GPT in 60 Lines of NumPy (Jay Mody)](https://jaykmody.com/blog/gpt-from-scratch/)
 - [The Illustrated GPT-2 (Jay Alammar)](http://jalammar.github.io/illustrated-gpt2/)
 
-Content:
-
-[[_TOC_]]
-
 Example Implementation
 ======================
 There are many open source implementations for the Llama models. For example:
